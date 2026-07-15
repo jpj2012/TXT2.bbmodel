@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TXT → .bbmodel Konverter</title>
+<style>
+  :root{
+    --bg: #14161a;
+    --panel: #1c1f25;
+    --grid-line: #262a32;
+    --text: #e7e9ee;
+    --text-dim: #8b909c;
+    --accent: #5ec9ff;
+    --accent-dim: #2b4a5c;
+    --ok: #7ee08a;
+    --err: #ff7a7a;
+    --border: #2c313a;
+    --mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  *{ box-sizing: border-box; }
+
+  html, body{
+    margin:0; padding:0;
+    background:
+      linear-gradient(var(--grid-line) 1px, transparent 1px) 0 0 / 24px 24px,
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / 24px 24px,
+      var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+  }
+
+  .wrap{
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+
+  header{
+    display:flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 40px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 28px;
+  }
+
+  .cube-mark{
+    width: 40px; height: 40px;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .cube-mark svg{ width:100%; height:100%; display:block; }
+
+  h1{
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+  }
+  h1 span{ color: var(--accent); }
+
+  .tagline{
+    color: var(--text-dim);
+    font-size: 0.95rem;
+    margin: 0;
+    max-width: 46ch;
+  }
+
+  .title-row{ display:flex; align-items:center; gap:14px; }
+
+  main{
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .panel{
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+  }
+
+  .panel h2{
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin: 0 0 16px;
+    display:flex;
+    align-items:center;
+    gap: 10px;
+  }
+
+  .panel h2 .step{
+    background: var(--accent-dim);
+    color: var(--accent);
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size: 0.75rem;
+  }
+
+  textarea{
+    width: 100%;
+    min-height: 220px;
+    background: #101215;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    line-height: 1.6;
+    resize: vertical;
+    tab-size: 2;
+  }
+  textarea:focus{
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .row{
+    display:flex;
+    gap: 12px;
+    align-items:center;
+    flex-wrap: wrap;
+    margin-top: 14px;
+  }
+
+  .file-btn{
+    position: relative;
+    overflow: hidden;
+  }
+  .file-btn input[type=file]{
+    position:absolute; inset:0; opacity:0; cursor:pointer;
+  }
+
+  button, .file-btn{
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 16px;
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }
+  button:hover, .file-btn:hover{
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  button.primary{
+    background: var(--accent);
+    color: #0a0c0f;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  button.primary:hover{
+    background: #79d4ff;
+  }
+  button.primary:disabled{
+    background: var(--accent-dim);
+    border-color: var(--accent-dim);
+    color: #5b6672;
+    cursor: not-allowed;
+  }
+
+  input[type=text]{
+    background: #101215;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    width: 220px;
+  }
+  input[type=text]:focus{ outline:none; border-color: var(--accent); }
+
+  label.small{
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .status{
+    margin-top: 16px;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    padding: 12px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #101215;
+    white-space: pre-wrap;
+    display:none;
+  }
+  .status.ok{ display:block; color: var(--ok); border-color: #2c4a30; }
+  .status.err{ display:block; color: var(--err); border-color: #4a2c2c; }
+  .status.idle{ display:block; color: var(--text-dim); }
+
+  .cube-list{
+    margin-top: 16px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  .cube-chip{
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    background: #101215;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--text-dim);
+  }
+  .cube-chip b{ color: var(--text); display:block; font-size: 0.8rem; margin-bottom: 2px; }
+
+  footer{
+    margin-top: 48px;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    text-align: center;
+    font-family: var(--mono);
+  }
+  footer a{ color: var(--accent); text-decoration: none; }
+  footer a:hover{ text-decoration: underline; }
+
+  .format-hint{
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    background: #101215;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    line-height: 1.7;
+  }
+  .format-hint b{ color: var(--accent); }
+
+  @media (max-width: 600px){
+    .wrap{ padding: 32px 16px 60px; }
+    input[type=text]{ width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="title-row">
+      <div class="cube-mark">
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="50,6 90,28 90,72 50,94 10,72 10,28" fill="none" stroke="#5ec9ff" stroke-width="2.5"/>
+          <polyline points="10,28 50,50 90,28" fill="none" stroke="#5ec9ff" stroke-width="2.5"/>
+          <line x1="50" y1="50" x2="50" y2="94" stroke="#5ec9ff" stroke-width="2.5"/>
+        </svg>
+      </div>
+      <div>
+        <h1>txt<span>→</span>bbmodel</h1>
+      </div>
+    </div>
+    <p class="tagline">Cube-Listen als Text eingeben, im Browser in ein fertiges Blockbench-Modell umwandeln. Kein Server, kein Upload – alles läuft lokal.</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2><span class="step">1</span> Cube-Daten eingeben</h2>
+      <div class="format-hint">
+<b>Format pro Zeile:</b> Name; x,y,z; sizeX,sizeY,sizeZ; rotX,rotY,rotZ (optional); pivotX,pivotY,pivotZ (optional)
+<b>Beispiel:</b> Kopf; -4,24,-4; 8,8,8
+Zeilen mit # werden ignoriert.
+      </div>
+      <textarea id="input" spellcheck="false"># Beispiel – ersetze das durch deine eigenen Cubes
+Kopf; -4,24,-4; 8,8,8
+Koerper; -4,12,-2; 8,12,4
+Arm_Links; -8,12,-2; 4,12,4; 0,0,15; -8,24,0
+Arm_Rechts; 4,12,-2; 4,12,4; 0,0,-15; 8,24,0
+Bein_Links; -4,0,-2; 4,12,4
+Bein_Rechts; 0,0,-2; 4,12,4</textarea>
+      <div class="row">
+        <label class="file-btn">
+          TXT-Datei laden
+          <input type="file" id="fileInput" accept=".txt">
+        </label>
+        <button id="parseBtn">Parsen &amp; prüfen</button>
+        <button id="aiTemplateBtn">Vorlage für KI herunterladen</button>
+      </div>
+      <div id="parseStatus" class="status"></div>
+      <div id="cubeList" class="cube-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2><span class="step">2</span> Modell benennen &amp; herunterladen</h2>
+      <div class="row">
+        <label class="small" for="modelName">Dateiname</label>
+        <input type="text" id="modelName" value="modell" spellcheck="false">
+        <span class="small" style="color:var(--text-dim)">.bbmodel</span>
+      </div>
+      <div class="row">
+        <button id="downloadBtn" class="primary" disabled>.bbmodel herunterladen</button>
+      </div>
+      <div id="downloadStatus" class="status"></div>
+    </section>
+  </main>
+
+  <footer>
+    generiert lokal im Browser · keine Daten verlassen dein Gerät
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  const inputEl = document.getElementById('input');
+  const fileInput = document.getElementById('fileInput');
+  const parseBtn = document.getElementById('parseBtn');
+  const aiTemplateBtn = document.getElementById('aiTemplateBtn');
+  const parseStatus = document.getElementById('parseStatus');
+  const cubeListEl = document.getElementById('cubeList');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const downloadStatus = document.getElementById('downloadStatus');
+  const modelNameInput = document.getElementById('modelName');
+
+  let currentModel = null;
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      inputEl.value = ev.target.result;
+      parseAndValidate();
+    };
+    reader.readAsText(file, 'utf-8');
+  });
+
+  parseBtn.addEventListener('click', parseAndValidate);
+
+  aiTemplateBtn.addEventListener('click', () => {
+    const template = buildAiTemplate();
+    const blob = new Blob([template], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ki_vorlage_cubes.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  function buildAiTemplate() {
+    return `# ANLEITUNG FÜR KI-MODELLE (z. B. ChatGPT, Claude, Gemini, ...)
+#
+# Diese Datei ist eine Vorlage für ein Blockbench-Cube-Modell (.bbmodel).
+# Bitte trage die Cubes unten nach genau folgendem Format ein — eine Zeile pro Cube:
+#
+#   Name; x,y,z; sizeX,sizeY,sizeZ; rotX,rotY,rotZ; pivotX,pivotY,pivotZ
+#
+# Erklärung der Felder:
+# - Name             : eindeutiger Bezeichner, z. B. Kopf, Arm_Links, Fluegel_Rechts
+# - x,y,z            : Position der unteren/vorderen/linken Ecke des Cubes
+#                       (1 Minecraft-Block = 16 Einheiten)
+# - sizeX,sizeY,sizeZ: Breite, Höhe, Tiefe des Cubes in denselben Einheiten
+# - rotX,rotY,rotZ   : OPTIONAL, Rotation in Grad, weglassbar -> Standard 0,0,0
+# - pivotX,pivotY,pivotZ: OPTIONAL, Drehpunkt für die Rotation,
+#                       weglassbar -> Standard = Mittelpunkt des Cubes
+#
+# Regeln:
+# - Genau EIN Cube pro Zeile
+# - Werte durch Semikolon (;) getrennt, Zahlen innerhalb eines Feldes durch Komma
+# - Zeilen, die mit # beginnen, oder leere Zeilen werden beim Einlesen ignoriert
+# - Rotation und Pivot dürfen weggelassen werden, wenn nicht benötigt
+# - Bitte auf sinnvolle Proportionen und möglichst wenig ungewollte Überlappung achten
+#
+# Beispiel (einfache humanoide Figur, insgesamt 24x32x8 Einheiten groß):
+# Kopf; -4,24,-4; 8,8,8
+# Koerper; -4,12,-2; 8,12,4
+# Arm_Links; -8,12,-2; 4,12,4; 0,0,15; -8,24,0
+# Arm_Rechts; 4,12,-2; 4,12,4; 0,0,-15; 8,24,0
+# Bein_Links; -4,0,-2; 4,12,4
+# Bein_Rechts; 0,0,-2; 4,12,4
+#
+# AUFGABE:
+# Ersetze die Beispielzeilen unten durch die Cubes für folgendes Modell:
+# [[HIER BESCHREIBEN, WAS DAS MODELL DARSTELLEN SOLL, Z.B. "ein Drache mit Fluegeln und Schwanz"]]
+#
+# Gib am Ende NUR die fertigen Zeilen im obigen Format zurück (plus gerne Kommentare),
+# ohne zusätzlichen Fließtext drumherum, damit die Datei direkt in den
+# TXT→bbmodel-Konverter geladen werden kann.
+
+Kopf; -4,24,-4; 8,8,8
+Koerper; -4,12,-2; 8,12,4
+Arm_Links; -8,12,-2; 4,12,4; 0,0,15; -8,24,0
+Arm_Rechts; 4,12,-2; 4,12,4; 0,0,-15; 8,24,0
+Bein_Links; -4,0,-2; 4,12,4
+Bein_Rechts; 0,0,-2; 4,12,4
+`;
+  }
+
+  downloadBtn.addEventListener('click', () => {
+    if (!currentModel) return;
+    const name = (modelNameInput.value.trim() || 'modell').replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const json = JSON.stringify(currentModel, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name + '.bbmodel';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    downloadStatus.className = 'status ok';
+    downloadStatus.textContent = 'Heruntergeladen: ' + name + '.bbmodel — einfach in Blockbench per "Open" laden.';
+  });
+
+  function uuidv4() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  function parseLine(line, lineNo) {
+    const parts = line.split(';').map(p => p.trim());
+    if (parts.length < 3) {
+      throw new Error(`Zeile ${lineNo}: Zu wenige Werte. Erwartet mind. "Name; x,y,z; sizeX,sizeY,sizeZ" — bekommen: "${line}"`);
+    }
+    const name = parts[0];
+    if (!name) throw new Error(`Zeile ${lineNo}: Name fehlt.`);
+
+    const pos = parts[1].split(',').map(Number);
+    const size = parts[2].split(',').map(Number);
+    if (pos.length !== 3 || pos.some(isNaN)) throw new Error(`Zeile ${lineNo}: Position braucht genau 3 Zahlen (x,y,z).`);
+    if (size.length !== 3 || size.some(isNaN)) throw new Error(`Zeile ${lineNo}: Größe braucht genau 3 Zahlen (x,y,z).`);
+
+    let rotation = [0, 0, 0];
+    if (parts[3]) {
+      rotation = parts[3].split(',').map(Number);
+      if (rotation.length !== 3 || rotation.some(isNaN)) throw new Error(`Zeile ${lineNo}: Rotation braucht genau 3 Zahlen.`);
+    }
+
+    const from = pos;
+    const to = [pos[0] + size[0], pos[1] + size[1], pos[2] + size[2]];
+
+    let pivot;
+    if (parts[4]) {
+      pivot = parts[4].split(',').map(Number);
+      if (pivot.length !== 3 || pivot.some(isNaN)) throw new Error(`Zeile ${lineNo}: Pivot braucht genau 3 Zahlen.`);
+    } else {
+      pivot = [0, 1, 2].map(i => (from[i] + to[i]) / 2);
+    }
+
+    return { name, from, to, rotation, pivot };
+  }
+
+  function makeFace(a, b) {
+    return { uv: [0, 0, a, b], texture: null };
+  }
+
+  function buildElement({ name, from, to, rotation, pivot }) {
+    const sx = to[0] - from[0];
+    const sy = to[1] - from[1];
+    const sz = to[2] - from[2];
+    return {
+      name,
+      box_uv: false,
+      rescale: false,
+      locked: false,
+      light_emission: 0,
+      render_order: "default",
+      allow_mirror_modeling: true,
+      from,
+      to,
+      autouv: 0,
+      color: 0,
+      origin: pivot,
+      rotation,
+      faces: {
+        north: makeFace(sx, sy),
+        east: makeFace(sz, sy),
+        south: makeFace(sx, sy),
+        west: makeFace(sz, sy),
+        up: makeFace(sx, sz),
+        down: makeFace(sx, sz),
+      },
+      type: "cube",
+      uuid: uuidv4(),
+    };
+  }
+
+  function buildModel(elements, modelName) {
+    return {
+      meta: { format_version: "4.10", model_format: "free", box_uv: false },
+      name: modelName,
+      model_identifier: "",
+      visible_box: [1, 1, 0],
+      variable_placeholders: "",
+      variable_placeholders_buttons: [],
+      timeline_setups: [],
+      unhandled_root_fields: {},
+      resolution: { width: 16, height: 16 },
+      elements,
+      outliner: elements.map(el => el.uuid),
+      textures: [],
+    };
+  }
+
+  function parseAndValidate() {
+    const text = inputEl.value;
+    const lines = text.split('\n');
+    const cubes = [];
+    downloadBtn.disabled = true;
+    currentModel = null;
+    cubeListEl.innerHTML = '';
+    downloadStatus.className = 'status';
+    downloadStatus.textContent = '';
+
+    try {
+      lines.forEach((raw, idx) => {
+        const line = raw.trim();
+        if (!line || line.startsWith('#')) return;
+        cubes.push(parseLine(line, idx + 1));
+      });
+
+      if (cubes.length === 0) {
+        parseStatus.className = 'status err';
+        parseStatus.textContent = 'Keine gültigen Cube-Zeilen gefunden.';
+        return;
+      }
+
+      const elements = cubes.map(buildElement);
+      const modelName = (modelNameInput.value.trim() || 'modell');
+      currentModel = buildModel(elements, modelName);
+
+      parseStatus.className = 'status ok';
+      parseStatus.textContent = `✓ ${cubes.length} Cube(s) erfolgreich geparst.`;
+
+      cubeListEl.innerHTML = cubes.map(c => `
+        <div class="cube-chip">
+          <b>${escapeHtml(c.name)}</b>
+          pos ${c.from.join(',')}<br>size ${(c.to[0]-c.from[0])},${(c.to[1]-c.from[1])},${(c.to[2]-c.from[2])}
+        </div>
+      `).join('');
+
+      downloadBtn.disabled = false;
+    } catch (err) {
+      parseStatus.className = 'status err';
+      parseStatus.textContent = '✗ ' + err.message;
+    }
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // Beim Laden direkt einmal mit dem Beispieltext parsen
+  parseAndValidate();
+})();
+</script>
+</body>
+</html>
