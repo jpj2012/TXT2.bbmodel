@@ -281,6 +281,7 @@
       <div class="format-hint">
 <b>Format pro Zeile:</b> Name; x,y,z; sizeX,sizeY,sizeZ; rotX,rotY,rotZ (optional); pivotX,pivotY,pivotZ (optional)
 <b>Beispiel:</b> Kopf; -4,24,-4; 8,8,8
+<b>Textur-Auflösung (optional, überschreibt Felder unten):</b> resolution; 64,64
 Zeilen mit # werden ignoriert.
       </div>
       <textarea id="input" spellcheck="false"># Beispiel – ersetze das durch deine eigenen Cubes
@@ -310,6 +311,13 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
         <span class="small" style="color:var(--text-dim)">.bbmodel</span>
       </div>
       <div class="row">
+        <label class="small" for="resWidth">Textur-Auflösung</label>
+        <input type="number" id="resWidth" value="16" min="1" style="width:80px">
+        <span class="small" style="color:var(--text-dim)">×</span>
+        <input type="number" id="resHeight" value="16" min="1" style="width:80px">
+        <span class="small" style="color:var(--text-dim)">px</span>
+      </div>
+      <div class="row">
         <button id="downloadBtn" class="primary" disabled>.bbmodel herunterladen</button>
       </div>
       <div id="downloadStatus" class="status"></div>
@@ -334,6 +342,8 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
   const downloadBtn = document.getElementById('downloadBtn');
   const downloadStatus = document.getElementById('downloadStatus');
   const modelNameInput = document.getElementById('modelName');
+  const resWidthInput = document.getElementById('resWidth');
+  const resHeightInput = document.getElementById('resHeight');
 
   let currentModel = null;
 
@@ -349,6 +359,8 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
   });
 
   parseBtn.addEventListener('click', parseAndValidate);
+  resWidthInput.addEventListener('change', () => { if (currentModel) parseAndValidate(); });
+  resHeightInput.addEventListener('change', () => { if (currentModel) parseAndValidate(); });
 
   aiTemplateBtn.addEventListener('click', () => {
     const template = buildAiTemplate();
@@ -380,6 +392,16 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # - pivotX,pivotY,pivotZ: OPTIONAL, Drehpunkt für die Rotation,
 #                       weglassbar -> Standard = Mittelpunkt des Cubes
 #
+# TEXTUR-AUFLÖSUNG (optional):
+# Falls die Textur eine andere Auflösung als die Standard-16x16-Pixel haben soll
+# (z. B. 64x64 für ein detaillierteres Modell), kann eine eigene Zeile ergänzt werden:
+#
+#   resolution; breite,hoehe
+#
+# Beispiel: resolution; 64,64
+# Diese Zeile ist optional und darf an beliebiger Stelle in der Datei stehen.
+# Ohne diese Zeile wird die im Tool eingestellte Auflösung (Standard 16x16) verwendet.
+#
 # Regeln:
 # - Genau EIN Cube pro Zeile
 # - Werte durch Semikolon (;) getrennt, Zahlen innerhalb eines Feldes durch Komma
@@ -388,6 +410,7 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # - Bitte auf sinnvolle Proportionen und möglichst wenig ungewollte Überlappung achten
 #
 # Beispiel (einfache humanoide Figur, insgesamt 24x32x8 Einheiten groß):
+# resolution; 64,64
 # Kopf; -4,24,-4; 8,8,8
 # Koerper; -4,12,-2; 8,12,4
 # Arm_Links; -8,12,-2; 4,12,4; 0,0,15; -8,24,0
@@ -403,6 +426,7 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # ohne zusätzlichen Fließtext drumherum, damit die Datei direkt in den
 # TXT→bbmodel-Konverter geladen werden kann.
 
+resolution; 64,64
 Kopf; -4,24,-4; 8,8,8
 Koerper; -4,12,-2; 8,12,4
 Arm_Links; -8,12,-2; 4,12,4; 0,0,15; -8,24,0
@@ -505,7 +529,7 @@ Bein_Rechts; 0,0,-2; 4,12,4
     };
   }
 
-  function buildModel(elements, modelName) {
+  function buildModel(elements, modelName, resolution) {
     return {
       meta: { format_version: "4.10", model_format: "free", box_uv: false },
       name: modelName,
@@ -515,7 +539,7 @@ Bein_Rechts; 0,0,-2; 4,12,4
       variable_placeholders_buttons: [],
       timeline_setups: [],
       unhandled_root_fields: {},
-      resolution: { width: 16, height: 16 },
+      resolution: { width: resolution[0], height: resolution[1] },
       elements,
       outliner: elements.map(el => el.uuid),
       textures: [],
@@ -526,6 +550,7 @@ Bein_Rechts; 0,0,-2; 4,12,4
     const text = inputEl.value;
     const lines = text.split('\n');
     const cubes = [];
+    let resolutionFromFile = null;
     downloadBtn.disabled = true;
     currentModel = null;
     cubeListEl.innerHTML = '';
@@ -536,6 +561,13 @@ Bein_Rechts; 0,0,-2; 4,12,4
       lines.forEach((raw, idx) => {
         const line = raw.trim();
         if (!line || line.startsWith('#')) return;
+
+        const resMatch = line.match(/^resolution\s*[;:]\s*(\d+)\s*,\s*(\d+)\s*$/i);
+        if (resMatch) {
+          resolutionFromFile = [parseInt(resMatch[1], 10), parseInt(resMatch[2], 10)];
+          return;
+        }
+
         cubes.push(parseLine(line, idx + 1));
       });
 
@@ -545,12 +577,23 @@ Bein_Rechts; 0,0,-2; 4,12,4
         return;
       }
 
+      if (resolutionFromFile) {
+        resWidthInput.value = resolutionFromFile[0];
+        resHeightInput.value = resolutionFromFile[1];
+      }
+
+      const resolution = [
+        parseInt(resWidthInput.value, 10) || 16,
+        parseInt(resHeightInput.value, 10) || 16,
+      ];
+
       const elements = cubes.map(buildElement);
       const modelName = (modelNameInput.value.trim() || 'modell');
-      currentModel = buildModel(elements, modelName);
+      currentModel = buildModel(elements, modelName, resolution);
 
       parseStatus.className = 'status ok';
-      parseStatus.textContent = `✓ ${cubes.length} Cube(s) erfolgreich geparst.`;
+      parseStatus.textContent = `✓ ${cubes.length} Cube(s) erfolgreich geparst. Auflösung: ${resolution[0]}×${resolution[1]}` +
+        (resolutionFromFile ? ' (aus TXT-Datei übernommen)' : '');
 
       cubeListEl.innerHTML = cubes.map(c => `
         <div class="cube-chip">
