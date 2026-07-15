@@ -416,7 +416,7 @@ Bein_Rechts; 0,0,-2; 4,12,4
     if (!currentModel) return;
     const name = (modelNameInput.value.trim() || 'modell').replace(/[^a-zA-Z0-9_\-]/g, '_');
     const json = JSON.stringify(currentModel, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
+    const blob = new Blob([json], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
