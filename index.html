@@ -494,13 +494,50 @@ Bein_Rechts; 0,0,-2; 4,12,4
     return { name, from, to, rotation, pivot };
   }
 
-  function buildElement({ name, from, to, rotation, pivot }, uvState) {
-    const sx = to[0] - from[0];
-    const sy = to[1] - from[1];
-    const sz = to[2] - from[2];
+  // Berechnet das klassische Minecraft-Box-UV-Layout für einen Cube:
+  // 6 Faces werden nebeneinander/übereinander in einem Kreuz-Layout angeordnet,
+  // sodass sie sich nicht überlappen. u,v ist die obere linke Ecke des Layouts.
+  function computeBoxUvFaces(dx, dy, dz, u, v) {
+    return {
+      up:    { uv: [u + dz,          v,               u + dz + dx,      v + dz],           texture: null },
+      down:  { uv: [u + dz + dx,     v,               u + dz + 2 * dx,  v + dz],           texture: null },
+      east:  { uv: [u,               v + dz,          u + dz,           v + dz + dy],       texture: null },
+      north: { uv: [u + dz,          v + dz,          u + dz + dx,      v + dz + dy],       texture: null },
+      west:  { uv: [u + dz + dx,     v + dz,          u + 2 * dz + dx,  v + dz + dy],       texture: null },
+      south: { uv: [u + 2 * dz + dx, v + dz,          u + 2 * dz + 2 * dx, v + dz + dy],    texture: null },
+    };
+  }
+
+  // Ordnet allen Cubes nicht überlappende Bereiche auf der Textur zu
+  // (einfaches "Shelf"-Packing: von links nach rechts, Zeilenumbruch wenn voll).
+  function packUvLayout(cubeDims, minWidth, minHeight) {
+    const boxes = cubeDims.map(({ dx, dy, dz }) => ({
+      boxW: 2 * dx + 2 * dz,
+      boxH: dz + dy,
+    }));
+    const maxBoxW = boxes.reduce((m, b) => Math.max(m, b.boxW), 1);
+    const shelfWidth = Math.max(minWidth, maxBoxW, 1);
+
+    let cursorX = 0, cursorY = 0, rowH = 0;
+    const offsets = [];
+    for (const b of boxes) {
+      if (cursorX !== 0 && cursorX + b.boxW > shelfWidth) {
+        cursorX = 0;
+        cursorY += rowH;
+        rowH = 0;
+      }
+      offsets.push([cursorX, cursorY]);
+      cursorX += b.boxW;
+      rowH = Math.max(rowH, b.boxH);
+    }
+    const finalHeight = Math.max(minHeight, cursorY + rowH, 1);
+    return { offsets, width: shelfWidth, height: finalHeight };
+  }
+
+  function buildElement({ name, from, to, rotation, pivot }, uvOffset, dims) {
     return {
       name,
-      box_uv: true,
+      box_uv: false,
       rescale: false,
       locked: false,
       light_emission: 0,
@@ -508,18 +545,11 @@ Bein_Rechts; 0,0,-2; 4,12,4
       allow_mirror_modeling: true,
       from,
       to,
-      autouv: 1,
+      autouv: 0,
       color: 0,
       origin: pivot,
       rotation,
-      faces: {
-        north: makeFace(sx, sy),
-        east: makeFace(sz, sy),
-        south: makeFace(sx, sy),
-        west: makeFace(sz, sy),
-        up: makeFace(sx, sz),
-        down: makeFace(sx, sz),
-      },
+      faces: computeBoxUvFaces(dims.dx, dims.dy, dims.dz, uvOffset[0], uvOffset[1]),
       type: "cube",
       uuid: uuidv4(),
     };
@@ -578,32 +608,29 @@ Bein_Rechts; 0,0,-2; 4,12,4
         resHeightInput.value = resolutionFromFile[1];
       }
 
-      const resolution = [
+      const minResolution = [
         parseInt(resWidthInput.value, 10) || 16,
         parseInt(resHeightInput.value, 10) || 16,
       ];
 
-      const uvState={x:0,y:0,rowH:0,width:resolution[0]};
-      const elements = cubes.map(c=>{
-        const sx=c.to[0]-c.from[0], sy=c.to[1]-c.from[1], sz=c.to[2]-c.from[2];
-        const w=2*sx+2*sz;
-        const h=sy+sz;
-        if(uvState.x+w>uvState.width){uvState.x=0;uvState.y+=uvState.rowH+1;uvState.rowH=0;}
-        const el={
-          name:c.name,box_uv:true,rescale:false,locked:false,light_emission:0,
-          render_order:"default",allow_mirror_modeling:true,
-          from:c.from,to:c.to,autouv:0,color:0,origin:c.pivot,rotation:c.rotation,
-          uv_offset:[uvState.x,uvState.y],type:"cube",uuid:uuidv4()
-        };
-        uvState.x+=w+1; if(h>uvState.rowH) uvState.rowH=h;
-        return el;
-      });
+      const cubeDims = cubes.map(c => ({
+        dx: Math.max(1, Math.round(c.to[0] - c.from[0])),
+        dy: Math.max(1, Math.round(c.to[1] - c.from[1])),
+        dz: Math.max(1, Math.round(c.to[2] - c.from[2])),
+      }));
+
+      const layout = packUvLayout(cubeDims, minResolution[0], minResolution[1]);
+      const resolution = [layout.width, layout.height];
+      const wasExpanded = layout.width > minResolution[0] || layout.height > minResolution[1];
+
+      const elements = cubes.map((c, i) => buildElement(c, layout.offsets[i], cubeDims[i]));
       const modelName = (modelNameInput.value.trim() || 'modell');
       currentModel = buildModel(elements, modelName, resolution);
 
       parseStatus.className = 'status ok';
-      parseStatus.textContent = `✓ ${cubes.length} Cube(s) erfolgreich geparst. Auflösung: ${resolution[0]}×${resolution[1]}` +
-        (resolutionFromFile ? ' (aus TXT-Datei übernommen)' : '');
+      parseStatus.textContent = `✓ ${cubes.length} Cube(s) erfolgreich geparst. UV-Layout: ${resolution[0]}×${resolution[1]}, jeder Cube auf eigenem, überlappungsfreiem Bereich` +
+        (resolutionFromFile ? ' (Basis-Auflösung aus TXT-Datei)' : '') +
+        (wasExpanded ? ' — automatisch vergrößert, damit alle Faces Platz finden' : '');
 
       cubeListEl.innerHTML = cubes.map(c => `
         <div class="cube-chip">
