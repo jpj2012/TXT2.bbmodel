@@ -285,6 +285,7 @@
 <b>Fläche einfärben:</b> color; Kopf; north; #3a2a1a
 <b>Einzelpixel setzen:</b> pixel; Kopf; north; 2,3; #ffffff
 Zeilen mit # werden ignoriert. Flächen: north/south/east/west/up/down/all.
+<b>Größenlimit:</b> Cubes über 48 Einheiten pro Achse werden nur mit Warnung erzeugt — für Minecraft besser aus mehreren kleineren Cubes zusammensetzen.
       </div>
       <textarea id="input" spellcheck="false"># Beispiel – ersetze das durch deine eigenen Cubes
 Kopf; -4,24,-4; 8,8,8
@@ -361,6 +362,7 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 
   let currentModel = null;
   let currentTextureDataUrl = null;
+  let oversizeWarnings = [];
 
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -440,12 +442,32 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # Ohne color/pixel-Zeilen bleibt die Textur transparent (kann später in Blockbench
 # von Hand bemalt werden).
 #
+# GRÖSSENLIMIT PRO CUBE (wichtig!):
+# Ein einzelner Cube darf pro Achse NICHT größer als 48 Einheiten sein
+# (sizeX, sizeY, sizeZ jeweils <= 48). Größere Cubes werden von Minecraft oft
+# falsch gerendert oder abgeschnitten.
+#
+# Falls ein Teil des Modells eigentlich größer sein müsste (z. B. ein riesiger
+# Torso oder ein langer Schwanz): NICHT einen übergroßen Cube verwenden,
+# sondern die Form aus mehreren kleineren, aneinandergrenzenden Cubes
+# zusammensetzen, die zusammen die gewünschte Gesamtgröße ergeben.
+#
+# Beispiel: Ein 96 Einheiten hoher Turm (zu groß für einen Cube) wird aus
+# zwei je 48 Einheiten hohen Cubes gestapelt:
+#   Turm_Unten; 0,0,0; 16,48,16
+#   Turm_Oben;  0,48,0; 16,48,16
+# (Turm_Oben beginnt genau dort in y, wo Turm_Unten endet: 0+48=48 -> passt nahtlos)
+#
+# Das gleiche Prinzip gilt für Breite (x) und Tiefe (z): lieber mehrere Cubes
+# nebeneinander/hintereinander setzen, als ein Maß über 48 zu benutzen.
+#
 # Regeln:
 # - Genau EIN Cube pro Zeile
 # - Werte durch Semikolon (;) getrennt, Zahlen innerhalb eines Feldes durch Komma
 # - Zeilen, die mit # beginnen, oder leere Zeilen werden beim Einlesen ignoriert
 # - Rotation und Pivot dürfen weggelassen werden, wenn nicht benötigt
 # - Bitte auf sinnvolle Proportionen und möglichst wenig ungewollte Überlappung achten
+# - KEIN Cube darf sizeX, sizeY oder sizeZ > 48 haben — bei Bedarf aufteilen (siehe oben)
 #
 # Beispiel (einfache humanoide Figur, insgesamt 24x32x8 Einheiten groß, grob bemalt):
 # resolution; 64,64
@@ -519,6 +541,11 @@ pixel; Kopf; north; 5,3; #000000
     });
   }
 
+  // Minecraft rendert einzelne Cube-Elemente typischerweise nur korrekt bis zu
+  // dieser Kantenlänge pro Achse (analog zum Java-Blockmodell-Limit -16..32 = 48).
+  // Größere Cubes sollten aus mehreren kleineren zusammengesetzt werden.
+  const MAX_CUBE_SIZE = 48;
+
   function parseLine(line, lineNo) {
     const parts = line.split(';').map(p => p.trim());
     if (parts.length < 3) {
@@ -531,6 +558,12 @@ pixel; Kopf; north; 5,3; #000000
     const size = parts[2].split(',').map(Number);
     if (pos.length !== 3 || pos.some(isNaN)) throw new Error(`Zeile ${lineNo}: Position braucht genau 3 Zahlen (x,y,z).`);
     if (size.length !== 3 || size.some(isNaN)) throw new Error(`Zeile ${lineNo}: Größe braucht genau 3 Zahlen (x,y,z).`);
+    if (size.some(s => Math.abs(s) > MAX_CUBE_SIZE)) {
+      oversizeWarnings.push(
+        `Zeile ${lineNo} ("${name}"): Größe ${size.join('×')} überschreitet ${MAX_CUBE_SIZE} Einheiten pro Achse — ` +
+        `in Minecraft ggf. fehlerhaft. Besser aus mehreren kleineren Cubes zusammensetzen.`
+      );
+    }
 
     let rotation = [0, 0, 0];
     if (parts[3]) {
@@ -703,6 +736,7 @@ pixel; Kopf; north; 5,3; #000000
     const cubes = [];
     const paintDirectives = [];
     let resolutionFromFile = null;
+    oversizeWarnings = [];
     downloadBtn.disabled = true;
     downloadTextureBtn.disabled = true;
     currentModel = null;
@@ -814,6 +848,9 @@ pixel; Kopf; north; 5,3; #000000
         (wasExpanded ? ' — automatisch vergrößert, damit alle Faces Platz finden' : '');
       if (paintDirectives.length > 0) {
         msg += `\n🎨 ${paintDirectives.length} Mal-Direktive(n) angewendet, Textur eingebettet.`;
+      }
+      if (oversizeWarnings.length > 0) {
+        msg += `\n⚠ ${oversizeWarnings.join('\n⚠ ')}`;
       }
       if (warnings.length > 0) {
         msg += `\n⚠ ${warnings.join('\n⚠ ')}`;
