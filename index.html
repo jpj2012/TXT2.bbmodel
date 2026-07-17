@@ -281,8 +281,10 @@
       <div class="format-hint">
 <b>Format pro Zeile:</b> Name; x,y,z; sizeX,sizeY,sizeZ; rotX,rotY,rotZ (optional); pivotX,pivotY,pivotZ (optional)
 <b>Beispiel:</b> Kopf; -4,24,-4; 8,8,8
-<b>Textur-Auflösung (optional, überschreibt Felder unten):</b> resolution; 64,64
-Zeilen mit # werden ignoriert.
+<b>Textur-Auflösung (optional):</b> resolution; 64,64
+<b>Fläche einfärben:</b> color; Kopf; north; #3a2a1a
+<b>Einzelpixel setzen:</b> pixel; Kopf; north; 2,3; #ffffff
+Zeilen mit # werden ignoriert. Flächen: north/south/east/west/up/down/all.
       </div>
       <textarea id="input" spellcheck="false"># Beispiel – ersetze das durch deine eigenen Cubes
 Kopf; -4,24,-4; 8,8,8
@@ -319,8 +321,17 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
       </div>
       <div class="row">
         <button id="downloadBtn" class="primary" disabled>.bbmodel herunterladen</button>
+        <button id="downloadTextureBtn" disabled>Textur (PNG) herunterladen</button>
       </div>
       <div id="downloadStatus" class="status"></div>
+      <div id="texturePreviewWrap" style="display:none; margin-top:16px;">
+        <label class="small">Textur-Vorschau</label>
+        <div style="margin-top:8px; display:inline-block; background:
+          repeating-conic-gradient(#20232a 0% 25%, #14161a 0% 50%) 50% / 16px 16px;
+          border:1px solid var(--border); border-radius:6px; padding:6px;">
+          <canvas id="texturePreviewCanvas" style="image-rendering:pixelated; display:block; max-width:256px; max-height:256px;"></canvas>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -344,8 +355,12 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
   const modelNameInput = document.getElementById('modelName');
   const resWidthInput = document.getElementById('resWidth');
   const resHeightInput = document.getElementById('resHeight');
+  const downloadTextureBtn = document.getElementById('downloadTextureBtn');
+  const texturePreviewWrap = document.getElementById('texturePreviewWrap');
+  const texturePreviewCanvas = document.getElementById('texturePreviewCanvas');
 
   let currentModel = null;
+  let currentTextureDataUrl = null;
 
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -402,6 +417,29 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # Diese Zeile ist optional und darf an beliebiger Stelle in der Datei stehen.
 # Ohne diese Zeile wird die im Tool eingestellte Auflösung (Standard 16x16) verwendet.
 #
+# TEXTUR BEMALEN (optional):
+# Du kannst dem Modell direkt eine Textur geben, ohne die genauen UV-Koordinaten
+# zu kennen — dafür beziehst du dich einfach auf Cube-Name + Flächenname.
+# Flächennamen: north, south, east, west, up, down, oder "all" für alle 6 Flächen.
+#
+# Ganze Fläche einfärben:
+#   color; Cube-Name; Fläche; #hexfarbe
+#   Beispiel: color; Kopf; north; #3a2a1a
+#   Beispiel: color; Kopf; all; #cc8844        (färbt den ganzen Kopf einheitlich)
+#
+# Einzelnen Pixel setzen (für Details wie Augen, Muster, Schattierungen):
+#   pixel; Cube-Name; Fläche; x,y; #hexfarbe
+#   x,y sind Pixel-Koordinaten INNERHALB der Fläche, oben links = 0,0.
+#   Die Fläche ist so groß wie die entsprechenden zwei Seitenlängen des Cubes
+#   (z. B. bei north/south: breite=sizeX, höhe=sizeY; bei up/down: sizeX,sizeZ;
+#   bei east/west: sizeZ,sizeY). Du musst x,y also nur relativ zur Cube-Größe wählen.
+#   Beispiel: pixel; Kopf; north; 2,3; #000000   (ein schwarzes Auge-Pixel)
+#
+# Reihenfolge zählt: spätere Zeilen überschreiben frühere an derselben Stelle.
+# Male also erst die Grundfarbe (color; ...; all; ...), danach Details (pixel; ...).
+# Ohne color/pixel-Zeilen bleibt die Textur transparent (kann später in Blockbench
+# von Hand bemalt werden).
+#
 # Regeln:
 # - Genau EIN Cube pro Zeile
 # - Werte durch Semikolon (;) getrennt, Zahlen innerhalb eines Feldes durch Komma
@@ -409,7 +447,7 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # - Rotation und Pivot dürfen weggelassen werden, wenn nicht benötigt
 # - Bitte auf sinnvolle Proportionen und möglichst wenig ungewollte Überlappung achten
 #
-# Beispiel (einfache humanoide Figur, insgesamt 24x32x8 Einheiten groß):
+# Beispiel (einfache humanoide Figur, insgesamt 24x32x8 Einheiten groß, grob bemalt):
 # resolution; 64,64
 # Kopf; -4,24,-4; 8,8,8
 # Koerper; -4,12,-2; 8,12,4
@@ -417,9 +455,14 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # Arm_Rechts; 4,12,-2; 4,12,4; 0,0,-15; 8,24,0
 # Bein_Links; -4,0,-2; 4,12,4
 # Bein_Rechts; 0,0,-2; 4,12,4
+# color; Kopf; all; #e0b088
+# color; Koerper; all; #3355aa
+# pixel; Kopf; north; 2,3; #000000
+# pixel; Kopf; north; 5,3; #000000
 #
 # AUFGABE:
-# Ersetze die Beispielzeilen unten durch die Cubes für folgendes Modell:
+# Ersetze die Beispielzeilen unten durch die Cubes (und optional Farben) für
+# folgendes Modell:
 # [[HIER BESCHREIBEN, WAS DAS MODELL DARSTELLEN SOLL, Z.B. "ein Drache mit Fluegeln und Schwanz"]]
 #
 # Gib am Ende NUR die fertigen Zeilen im obigen Format zurück (plus gerne Kommentare),
@@ -433,6 +476,10 @@ Arm_Links; -8,12,-2; 4,12,4; 0,0,15; -8,24,0
 Arm_Rechts; 4,12,-2; 4,12,4; 0,0,-15; 8,24,0
 Bein_Links; -4,0,-2; 4,12,4
 Bein_Rechts; 0,0,-2; 4,12,4
+color; Kopf; all; #e0b088
+color; Koerper; all; #3355aa
+pixel; Kopf; north; 2,3; #000000
+pixel; Kopf; north; 5,3; #000000
 `;
   }
 
@@ -451,6 +498,17 @@ Bein_Rechts; 0,0,-2; 4,12,4
     URL.revokeObjectURL(url);
     downloadStatus.className = 'status ok';
     downloadStatus.textContent = 'Heruntergeladen: ' + name + '.bbmodel — einfach in Blockbench per "Open" laden.';
+  });
+
+  downloadTextureBtn.addEventListener('click', () => {
+    if (!currentTextureDataUrl) return;
+    const name = (modelNameInput.value.trim() || 'modell').replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const a = document.createElement('a');
+    a.href = currentTextureDataUrl;
+    a.download = name + '.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   });
 
   function uuidv4() {
@@ -534,7 +592,74 @@ Bein_Rechts; 0,0,-2; 4,12,4
     return { offsets, width: shelfWidth, height: finalHeight };
   }
 
-  function buildElement({ name, from, to, rotation, pivot }, uvOffset, dims) {
+  const VALID_FACES = ['north', 'south', 'east', 'west', 'up', 'down', 'all'];
+
+  function parsePaintLine(line, lineNo) {
+    let m = line.match(/^color\s*;\s*([^;]+);\s*([^;]+);\s*(#[0-9a-fA-F]{3,8})\s*$/i);
+    if (m) {
+      const face = m[2].trim().toLowerCase();
+      if (!VALID_FACES.includes(face)) {
+        throw new Error(`Zeile ${lineNo}: Unbekannte Fläche "${m[2].trim()}". Erlaubt: ${VALID_FACES.join(', ')}.`);
+      }
+      return { type: 'color', cube: m[1].trim(), face, color: m[3] };
+    }
+    m = line.match(/^pixel\s*;\s*([^;]+);\s*([^;]+);\s*(\d+)\s*,\s*(\d+)\s*;\s*(#[0-9a-fA-F]{3,8})\s*$/i);
+    if (m) {
+      const face = m[2].trim().toLowerCase();
+      if (!VALID_FACES.includes(face)) {
+        throw new Error(`Zeile ${lineNo}: Unbekannte Fläche "${m[2].trim()}". Erlaubt: ${VALID_FACES.join(', ')}.`);
+      }
+      return { type: 'pixel', cube: m[1].trim(), face, x: parseInt(m[3], 10), y: parseInt(m[4], 10), color: m[5] };
+    }
+    return null;
+  }
+
+  // Baut die Textur als Canvas: wendet color/pixel-Direktiven auf die jeweiligen
+  // UV-Rechtecke der passenden Cubes an. Gibt das Canvas + eine PNG-DataURL zurück.
+  function buildTextureCanvas(width, height, faceRectsByCube, paintDirectives) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, width, height);
+    ctx.imageSmoothingEnabled = false;
+
+    const warnings = [];
+
+    for (const d of paintDirectives) {
+      const rects = faceRectsByCube[d.cube];
+      if (!rects) {
+        warnings.push(`Cube "${d.cube}" aus einer Mal-Zeile wurde nicht gefunden — ignoriert.`);
+        continue;
+      }
+      const targetFaces = d.face === 'all' ? Object.keys(rects) : [d.face];
+      for (const f of targetFaces) {
+        const rect = rects[f];
+        if (!rect) continue;
+        const [u1, v1, u2, v2] = rect;
+        ctx.fillStyle = d.color;
+        if (d.type === 'color') {
+          ctx.fillRect(u1, v1, u2 - u1, v2 - v1);
+        } else {
+          const faceW = u2 - u1;
+          const faceH = v2 - v1;
+          if (d.x >= faceW || d.y >= faceH) {
+            warnings.push(`Pixel (${d.x},${d.y}) außerhalb von "${d.cube}/${f}" (Fläche ist ${faceW}×${faceH} groß) — ignoriert.`);
+            continue;
+          }
+          ctx.fillRect(u1 + d.x, v1 + d.y, 1, 1);
+        }
+      }
+    }
+
+    return { canvas, dataUrl: canvas.toDataURL('image/png'), warnings };
+  }
+
+  function buildElement({ name, from, to, rotation, pivot }, uvOffset, dims, textureIndex) {
+    const faces = computeBoxUvFaces(dims.dx, dims.dy, dims.dz, uvOffset[0], uvOffset[1]);
+    if (textureIndex !== null) {
+      Object.values(faces).forEach(f => { f.texture = textureIndex; });
+    }
     return {
       name,
       box_uv: false,
@@ -549,13 +674,13 @@ Bein_Rechts; 0,0,-2; 4,12,4
       color: 0,
       origin: pivot,
       rotation,
-      faces: computeBoxUvFaces(dims.dx, dims.dy, dims.dz, uvOffset[0], uvOffset[1]),
+      faces,
       type: "cube",
       uuid: uuidv4(),
     };
   }
 
-  function buildModel(elements, modelName, resolution) {
+  function buildModel(elements, modelName, resolution, textures) {
     return {
       meta: { format_version: "4.10", model_format: "free", box_uv: false },
       name: modelName,
@@ -568,7 +693,7 @@ Bein_Rechts; 0,0,-2; 4,12,4
       resolution: { width: resolution[0], height: resolution[1] },
       elements,
       outliner: elements.map(el => el.uuid),
-      textures: [],
+      textures: textures || [],
     };
   }
 
@@ -576,9 +701,13 @@ Bein_Rechts; 0,0,-2; 4,12,4
     const text = inputEl.value;
     const lines = text.split('\n');
     const cubes = [];
+    const paintDirectives = [];
     let resolutionFromFile = null;
     downloadBtn.disabled = true;
+    downloadTextureBtn.disabled = true;
     currentModel = null;
+    currentTextureDataUrl = null;
+    texturePreviewWrap.style.display = 'none';
     cubeListEl.innerHTML = '';
     downloadStatus.className = 'status';
     downloadStatus.textContent = '';
@@ -591,6 +720,12 @@ Bein_Rechts; 0,0,-2; 4,12,4
         const resMatch = line.match(/^resolution\s*[;:]\s*(\d+)\s*,\s*(\d+)\s*$/i);
         if (resMatch) {
           resolutionFromFile = [parseInt(resMatch[1], 10), parseInt(resMatch[2], 10)];
+          return;
+        }
+
+        const paint = parsePaintLine(line, idx + 1);
+        if (paint) {
+          paintDirectives.push(paint);
           return;
         }
 
@@ -623,14 +758,67 @@ Bein_Rechts; 0,0,-2; 4,12,4
       const resolution = [layout.width, layout.height];
       const wasExpanded = layout.width > minResolution[0] || layout.height > minResolution[1];
 
-      const elements = cubes.map((c, i) => buildElement(c, layout.offsets[i], cubeDims[i]));
+      // Face-Rechtecke pro Cube-Namen sammeln, damit Paint-Direktiven sie finden können
+      const faceRectsByCube = {};
+      cubes.forEach((c, i) => {
+        const faces = computeBoxUvFaces(cubeDims[i].dx, cubeDims[i].dy, cubeDims[i].dz, layout.offsets[i][0], layout.offsets[i][1]);
+        const rects = {};
+        Object.entries(faces).forEach(([dir, f]) => { rects[dir] = f.uv; });
+        faceRectsByCube[c.name] = rects;
+      });
+
+      const hasTexture = true; // Textur immer erzeugen (auch transparent), damit Vorschau/Download stets verfügbar sind
+      const textureIndex = hasTexture ? 0 : null;
+      const elements = cubes.map((c, i) => buildElement(c, layout.offsets[i], cubeDims[i], textureIndex));
+
+      const { canvas, dataUrl, warnings } = buildTextureCanvas(resolution[0], resolution[1], faceRectsByCube, paintDirectives);
+      currentTextureDataUrl = dataUrl;
+
       const modelName = (modelNameInput.value.trim() || 'modell');
-      currentModel = buildModel(elements, modelName, resolution);
+      const textures = [{
+        uuid: uuidv4(),
+        name: modelName,
+        id: "0",
+        path: "",
+        relative_path: modelName + ".png",
+        width: resolution[0],
+        height: resolution[1],
+        uv_width: resolution[0],
+        uv_height: resolution[1],
+        particle: false,
+        render_mode: "default",
+        render_sides: "auto",
+        internal: true,
+        source: dataUrl,
+        mode: "bitmap",
+        saved: false,
+        visible: true,
+        folder: "",
+        namespace: "",
+      }];
+
+      currentModel = buildModel(elements, modelName, resolution, textures);
+
+      // Textur-Vorschau anzeigen
+      texturePreviewCanvas.width = canvas.width;
+      texturePreviewCanvas.height = canvas.height;
+      const pctx = texturePreviewCanvas.getContext('2d');
+      pctx.imageSmoothingEnabled = false;
+      pctx.clearRect(0, 0, canvas.width, canvas.height);
+      pctx.drawImage(canvas, 0, 0);
+      texturePreviewWrap.style.display = 'block';
 
       parseStatus.className = 'status ok';
-      parseStatus.textContent = `✓ ${cubes.length} Cube(s) erfolgreich geparst. UV-Layout: ${resolution[0]}×${resolution[1]}, jeder Cube auf eigenem, überlappungsfreiem Bereich` +
+      let msg = `✓ ${cubes.length} Cube(s) erfolgreich geparst. UV-Layout: ${resolution[0]}×${resolution[1]}, jeder Cube auf eigenem, überlappungsfreiem Bereich` +
         (resolutionFromFile ? ' (Basis-Auflösung aus TXT-Datei)' : '') +
         (wasExpanded ? ' — automatisch vergrößert, damit alle Faces Platz finden' : '');
+      if (paintDirectives.length > 0) {
+        msg += `\n🎨 ${paintDirectives.length} Mal-Direktive(n) angewendet, Textur eingebettet.`;
+      }
+      if (warnings.length > 0) {
+        msg += `\n⚠ ${warnings.join('\n⚠ ')}`;
+      }
+      parseStatus.textContent = msg;
 
       cubeListEl.innerHTML = cubes.map(c => `
         <div class="cube-chip">
@@ -640,6 +828,7 @@ Bein_Rechts; 0,0,-2; 4,12,4
       `).join('');
 
       downloadBtn.disabled = false;
+      downloadTextureBtn.disabled = false;
     } catch (err) {
       parseStatus.className = 'status err';
       parseStatus.textContent = '✗ ' + err.message;
