@@ -468,6 +468,10 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # - Rotation und Pivot dürfen weggelassen werden, wenn nicht benötigt
 # - Bitte auf sinnvolle Proportionen und möglichst wenig ungewollte Überlappung achten
 # - KEIN Cube darf sizeX, sizeY oder sizeZ > 48 haben — bei Bedarf aufteilen (siehe oben)
+# - Jede Kantenlänge muss > 0 sein. Werte unter 1 (z. B. 0.5) funktionieren zwar
+#   auch (das Tool skaliert das gesamte Modell dann automatisch hoch, damit jede
+#   Fläche bemalbar bleibt), besser ist es aber, von Anfang an mit Kantenlängen
+#   >= 1 zu arbeiten, um unnötige Skalierung zu vermeiden.
 #
 # Beispiel (einfache humanoide Figur, insgesamt 24x32x8 Einheiten groß, grob bemalt):
 # resolution; 64,64
@@ -558,11 +562,8 @@ pixel; Kopf; north; 5,3; #000000
     const size = parts[2].split(',').map(Number);
     if (pos.length !== 3 || pos.some(isNaN)) throw new Error(`Zeile ${lineNo}: Position braucht genau 3 Zahlen (x,y,z).`);
     if (size.length !== 3 || size.some(isNaN)) throw new Error(`Zeile ${lineNo}: Größe braucht genau 3 Zahlen (x,y,z).`);
-    if (size.some(s => Math.abs(s) > MAX_CUBE_SIZE)) {
-      oversizeWarnings.push(
-        `Zeile ${lineNo} ("${name}"): Größe ${size.join('×')} überschreitet ${MAX_CUBE_SIZE} Einheiten pro Achse — ` +
-        `in Minecraft ggf. fehlerhaft. Besser aus mehreren kleineren Cubes zusammensetzen.`
-      );
+    if (size.some(s => s === 0)) {
+      throw new Error(`Zeile ${lineNo} ("${name}"): Eine Kantenlänge ist exakt 0 — das ergibt eine unsichtbare, nicht bemalbare Fläche. Bitte eine Größe > 0 angeben.`);
     }
 
     let rotation = [0, 0, 0];
@@ -583,6 +584,32 @@ pixel; Kopf; north; 5,3; #000000
     }
 
     return { name, from, to, rotation, pivot };
+  }
+
+  // Ermittelt die kleinste Kantenlänge über alle Cubes hinweg. Liegt sie unter 1,
+  // wird das GESAMTE Modell (Positionen, Größen, Pivots) proportional so hochskaliert,
+  // dass die kleinste Kante genau 1 Einheit groß wird — jede Fläche bleibt damit
+  // bemalbar, und alle Cubes passen weiterhin exakt zueinander (reine Uniform-Skalierung).
+  function autoScaleToMinSize(cubes) {
+    let minSize = Infinity;
+    cubes.forEach(c => {
+      for (let i = 0; i < 3; i++) {
+        const s = Math.abs(c.to[i] - c.from[i]);
+        if (s > 0 && s < minSize) minSize = s;
+      }
+    });
+
+    if (!isFinite(minSize) || minSize >= 1) return 1;
+
+    const factor = 1 / minSize;
+    cubes.forEach(c => {
+      for (let i = 0; i < 3; i++) {
+        c.from[i] *= factor;
+        c.to[i] *= factor;
+        c.pivot[i] *= factor;
+      }
+    });
+    return factor;
   }
 
   // Berechnet das klassische Minecraft-Box-UV-Layout für einen Cube:
@@ -772,6 +799,22 @@ pixel; Kopf; north; 5,3; #000000
         return;
       }
 
+      const scaleFactor = autoScaleToMinSize(cubes);
+
+      cubes.forEach(c => {
+        const size = [
+          Math.abs(c.to[0] - c.from[0]),
+          Math.abs(c.to[1] - c.from[1]),
+          Math.abs(c.to[2] - c.from[2]),
+        ];
+        if (size.some(s => s > MAX_CUBE_SIZE)) {
+          oversizeWarnings.push(
+            `Cube "${c.name}": Größe ${size.map(s => Math.round(s * 100) / 100).join('×')} überschreitet ${MAX_CUBE_SIZE} Einheiten pro Achse — ` +
+            `in Minecraft ggf. fehlerhaft. Besser aus mehreren kleineren Cubes zusammensetzen.`
+          );
+        }
+      });
+
       if (resolutionFromFile) {
         resWidthInput.value = resolutionFromFile[0];
         resHeightInput.value = resolutionFromFile[1];
@@ -846,6 +889,9 @@ pixel; Kopf; north; 5,3; #000000
       let msg = `✓ ${cubes.length} Cube(s) erfolgreich geparst. UV-Layout: ${resolution[0]}×${resolution[1]}, jeder Cube auf eigenem, überlappungsfreiem Bereich` +
         (resolutionFromFile ? ' (Basis-Auflösung aus TXT-Datei)' : '') +
         (wasExpanded ? ' — automatisch vergrößert, damit alle Faces Platz finden' : '');
+      if (scaleFactor !== 1) {
+        msg += `\n📐 Gesamtes Modell um Faktor ${Math.round(scaleFactor * 100) / 100}× vergrößert, da mindestens eine Kante kleiner als 1 war (sonst nicht bemalbar) — alle Cubes proportional mitskaliert.`;
+      }
       if (paintDirectives.length > 0) {
         msg += `\n🎨 ${paintDirectives.length} Mal-Direktive(n) angewendet, Textur eingebettet.`;
       }
@@ -857,10 +903,11 @@ pixel; Kopf; north; 5,3; #000000
       }
       parseStatus.textContent = msg;
 
+      const fmt = n => Math.round(n * 100) / 100;
       cubeListEl.innerHTML = cubes.map(c => `
         <div class="cube-chip">
           <b>${escapeHtml(c.name)}</b>
-          pos ${c.from.join(',')}<br>size ${(c.to[0]-c.from[0])},${(c.to[1]-c.from[1])},${(c.to[2]-c.from[2])}
+          pos ${c.from.map(fmt).join(',')}<br>size ${fmt(c.to[0]-c.from[0])},${fmt(c.to[1]-c.from[1])},${fmt(c.to[2]-c.from[2])}
         </div>
       `).join('');
 
