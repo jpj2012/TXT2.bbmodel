@@ -285,7 +285,8 @@
 <b>Fläche einfärben:</b> color; Kopf; north; #3a2a1a
 <b>Einzelpixel setzen:</b> pixel; Kopf; north; 2,3; #ffffff
 Zeilen mit # werden ignoriert. Flächen: north/south/east/west/up/down/all.
-<b>Größenlimit:</b> Cubes über 48 Einheiten pro Achse werden nur mit Warnung erzeugt — für Minecraft besser aus mehreren kleineren Cubes zusammensetzen.
+<b>Größenlimit:</b> Cubes über 48 Einheiten pro Achse werden automatisch in nahtlose, gleich rotierende Teile gesplittet.
+<b>Mindestgröße:</b> Kanten unter 1 führen zu proportionaler Hochskalierung des ganzen Modells.
       </div>
       <textarea id="input" spellcheck="false"># Beispiel – ersetze das durch deine eigenen Cubes
 Kopf; -4,24,-4; 8,8,8
@@ -362,7 +363,6 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 
   let currentModel = null;
   let currentTextureDataUrl = null;
-  let oversizeWarnings = [];
 
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -443,14 +443,15 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # von Hand bemalt werden).
 #
 # GRÖSSENLIMIT PRO CUBE (wichtig!):
-# Ein einzelner Cube darf pro Achse NICHT größer als 48 Einheiten sein
+# Ein einzelner Cube sollte pro Achse NICHT größer als 48 Einheiten sein
 # (sizeX, sizeY, sizeZ jeweils <= 48). Größere Cubes werden von Minecraft oft
 # falsch gerendert oder abgeschnitten.
 #
 # Falls ein Teil des Modells eigentlich größer sein müsste (z. B. ein riesiger
-# Torso oder ein langer Schwanz): NICHT einen übergroßen Cube verwenden,
-# sondern die Form aus mehreren kleineren, aneinandergrenzenden Cubes
-# zusammensetzen, die zusammen die gewünschte Gesamtgröße ergeben.
+# Torso oder ein langer Schwanz): am besten NICHT einen übergroßen Cube
+# verwenden, sondern die Form von vornherein aus mehreren kleineren,
+# aneinandergrenzenden Cubes zusammensetzen, die zusammen die gewünschte
+# Gesamtgröße ergeben.
 #
 # Beispiel: Ein 96 Einheiten hoher Turm (zu groß für einen Cube) wird aus
 # zwei je 48 Einheiten hohen Cubes gestapelt:
@@ -460,6 +461,13 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 #
 # Das gleiche Prinzip gilt für Breite (x) und Tiefe (z): lieber mehrere Cubes
 # nebeneinander/hintereinander setzen, als ein Maß über 48 zu benutzen.
+#
+# HINWEIS: Der Konverter splittet zu große Cubes inzwischen zur Not auch
+# automatisch (in nahtlose, gleich große Teile mit identischer Rotation/Pivot).
+# Das ist ein Sicherheitsnetz, kein Freibrief — bei sehr extremen Übergrößen
+# (z. B. 500 statt 48) entstehen dabei sehr viele Teile und eine riesige
+# Textur. Bitte trotzdem von Anfang an selbst sinnvoll unter 48 pro Achse
+# bleiben bzw. wie im Beispiel oben manuell zusammensetzen.
 #
 # Regeln:
 # - Genau EIN Cube pro Zeile
@@ -612,6 +620,68 @@ pixel; Kopf; north; 5,3; #000000
     return factor;
   }
 
+  // Zerlegt einen Cube, dessen Kantenlänge(n) MAX_CUBE_SIZE überschreiten, in mehrere
+  // gleich große, nahtlos aneinandergrenzende Teilstücke. Rotation und Pivot bleiben
+  // für alle Teile identisch zum Original, damit sie sich als eine Einheit drehen.
+  // Gibt bei keinem Split-Bedarf ein Array mit nur dem Original-Cube zurück.
+  function splitOversizedCube(cube) {
+    const splitsPerAxis = [0, 1, 2].map(i => {
+      const size = Math.abs(cube.to[i] - cube.from[i]);
+      return Math.max(1, Math.ceil(size / MAX_CUBE_SIZE));
+    });
+
+    if (splitsPerAxis.every(n => n === 1)) return [cube];
+
+    const segmentsPerAxis = [0, 1, 2].map(axis => {
+      const n = splitsPerAxis[axis];
+      const start = cube.from[axis];
+      const total = cube.to[axis] - cube.from[axis];
+      const step = total / n;
+      const segs = [];
+      for (let i = 0; i < n; i++) {
+        segs.push([start + i * step, start + (i + 1) * step]);
+      }
+      return segs;
+    });
+
+    const totalParts = splitsPerAxis[0] * splitsPerAxis[1] * splitsPerAxis[2];
+    const parts = [];
+    let counter = 0;
+    for (const sx of segmentsPerAxis[0]) {
+      for (const sy of segmentsPerAxis[1]) {
+        for (const sz of segmentsPerAxis[2]) {
+          counter++;
+          parts.push({
+            name: totalParts > 1 ? `${cube.name}_${counter}` : cube.name,
+            baseName: cube.name,
+            from: [sx[0], sy[0], sz[0]],
+            to: [sx[1], sy[1], sz[1]],
+            rotation: cube.rotation.slice(),
+            pivot: cube.pivot.slice(),
+          });
+        }
+      }
+    }
+    return parts;
+  }
+
+  // Wendet splitOversizedCube auf eine ganze Cube-Liste an und meldet, wie viele
+  // Cubes in wie viele Teile aufgeteilt wurden.
+  function splitAllOversizedCubes(cubes) {
+    const result = [];
+    let splitOriginals = 0;
+    let totalNewParts = 0;
+    cubes.forEach(c => {
+      const parts = splitOversizedCube(c);
+      if (parts.length > 1) {
+        splitOriginals++;
+        totalNewParts += parts.length;
+      }
+      result.push(...parts);
+    });
+    return { cubes: result, splitOriginals, totalNewParts };
+  }
+
   // Berechnet das klassische Minecraft-Box-UV-Layout für einen Cube:
   // 6 Faces werden nebeneinander/übereinander in einem Kreuz-Layout angeordnet,
   // sodass sie sich nicht überlappen. u,v ist die obere linke Ecke des Layouts.
@@ -674,6 +744,16 @@ pixel; Kopf; north; 5,3; #000000
     return null;
   }
 
+  // Löst einen in einer Mal-Zeile genannten Cube-Namen auf: exakter Treffer,
+  // oder falls der Cube automatisch gesplittet wurde (Namen "Basis_1", "Basis_2", ...),
+  // alle daraus entstandenen Teile — so trifft "color; Kopf; ..." weiterhin alle
+  // Teile eines zu groß gewesenen und automatisch gesplitteten "Kopf"-Cubes.
+  function resolveTargetCubeNames(faceRectsByCube, name) {
+    if (faceRectsByCube[name]) return [name];
+    const prefix = name + '_';
+    return Object.keys(faceRectsByCube).filter(k => k.startsWith(prefix));
+  }
+
   // Baut die Textur als Canvas: wendet color/pixel-Direktiven auf die jeweiligen
   // UV-Rechtecke der passenden Cubes an. Gibt das Canvas + eine PNG-DataURL zurück.
   function buildTextureCanvas(width, height, faceRectsByCube, paintDirectives) {
@@ -687,11 +767,13 @@ pixel; Kopf; north; 5,3; #000000
     const warnings = [];
 
     for (const d of paintDirectives) {
-      const rects = faceRectsByCube[d.cube];
-      if (!rects) {
+      const targetNames = resolveTargetCubeNames(faceRectsByCube, d.cube);
+      if (targetNames.length === 0) {
         warnings.push(`Cube "${d.cube}" aus einer Mal-Zeile wurde nicht gefunden — ignoriert.`);
         continue;
       }
+      for (const targetName of targetNames) {
+      const rects = faceRectsByCube[targetName];
       const targetFaces = d.face === 'all' ? Object.keys(rects) : [d.face];
       for (const f of targetFaces) {
         const rect = rects[f];
@@ -709,6 +791,7 @@ pixel; Kopf; north; 5,3; #000000
           }
           ctx.fillRect(u1 + d.x, v1 + d.y, 1, 1);
         }
+      }
       }
     }
 
@@ -760,10 +843,9 @@ pixel; Kopf; north; 5,3; #000000
   function parseAndValidate() {
     const text = inputEl.value;
     const lines = text.split('\n');
-    const cubes = [];
+    let cubes = [];
     const paintDirectives = [];
     let resolutionFromFile = null;
-    oversizeWarnings = [];
     downloadBtn.disabled = true;
     downloadTextureBtn.disabled = true;
     currentModel = null;
@@ -801,19 +883,8 @@ pixel; Kopf; north; 5,3; #000000
 
       const scaleFactor = autoScaleToMinSize(cubes);
 
-      cubes.forEach(c => {
-        const size = [
-          Math.abs(c.to[0] - c.from[0]),
-          Math.abs(c.to[1] - c.from[1]),
-          Math.abs(c.to[2] - c.from[2]),
-        ];
-        if (size.some(s => s > MAX_CUBE_SIZE)) {
-          oversizeWarnings.push(
-            `Cube "${c.name}": Größe ${size.map(s => Math.round(s * 100) / 100).join('×')} überschreitet ${MAX_CUBE_SIZE} Einheiten pro Achse — ` +
-            `in Minecraft ggf. fehlerhaft. Besser aus mehreren kleineren Cubes zusammensetzen.`
-          );
-        }
-      });
+      const splitResult = splitAllOversizedCubes(cubes);
+      cubes = splitResult.cubes;
 
       if (resolutionFromFile) {
         resWidthInput.value = resolutionFromFile[0];
@@ -892,11 +963,11 @@ pixel; Kopf; north; 5,3; #000000
       if (scaleFactor !== 1) {
         msg += `\n📐 Gesamtes Modell um Faktor ${Math.round(scaleFactor * 100) / 100}× vergrößert, da mindestens eine Kante kleiner als 1 war (sonst nicht bemalbar) — alle Cubes proportional mitskaliert.`;
       }
+      if (splitResult.splitOriginals > 0) {
+        msg += `\n✂️ ${splitResult.splitOriginals} zu große(r) Cube(s) automatisch in insgesamt ${splitResult.totalNewParts} nahtlose Teile aufgeteilt (Grenze: ${MAX_CUBE_SIZE} Einheiten/Achse).`;
+      }
       if (paintDirectives.length > 0) {
         msg += `\n🎨 ${paintDirectives.length} Mal-Direktive(n) angewendet, Textur eingebettet.`;
-      }
-      if (oversizeWarnings.length > 0) {
-        msg += `\n⚠ ${oversizeWarnings.join('\n⚠ ')}`;
       }
       if (warnings.length > 0) {
         msg += `\n⚠ ${warnings.join('\n⚠ ')}`;
