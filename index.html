@@ -287,6 +287,7 @@
 Zeilen mit # werden ignoriert. Flächen: north/south/east/west/up/down/all.
 <b>Größenlimit:</b> Cubes über 48 Einheiten pro Achse werden automatisch in nahtlose, gleich rotierende Teile gesplittet.
 <b>Mindestgröße:</b> Kanten unter 1 führen zu proportionaler Hochskalierung des ganzen Modells.
+<b>Tipp:</b> Nach dem Parsen kann eine UV-Vorlage (Schablone) heruntergeladen werden, um extern exakt passend zu bemalen und danach wieder hochzuladen.
       </div>
       <textarea id="input" spellcheck="false"># Beispiel – ersetze das durch deine eigenen Cubes
 Kopf; -4,24,-4; 8,8,8
@@ -325,6 +326,13 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
         <button id="downloadBtn" class="primary" disabled>.bbmodel herunterladen</button>
         <button id="downloadTextureBtn" disabled>Textur (PNG) herunterladen</button>
       </div>
+      <div class="row">
+        <button id="downloadUvTemplateBtn" disabled>UV-Vorlage (PNG) herunterladen</button>
+        <label class="file-btn" id="uploadTextureLabel" style="opacity:0.5;">
+          Eigene Textur hochladen
+          <input type="file" id="uploadTextureInput" accept="image/png,image/jpeg" disabled>
+        </label>
+      </div>
       <div id="downloadStatus" class="status"></div>
       <div id="texturePreviewWrap" style="display:none; margin-top:16px;">
         <label class="small">Textur-Vorschau</label>
@@ -360,9 +368,14 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
   const downloadTextureBtn = document.getElementById('downloadTextureBtn');
   const texturePreviewWrap = document.getElementById('texturePreviewWrap');
   const texturePreviewCanvas = document.getElementById('texturePreviewCanvas');
+  const downloadUvTemplateBtn = document.getElementById('downloadUvTemplateBtn');
+  const uploadTextureLabel = document.getElementById('uploadTextureLabel');
+  const uploadTextureInput = document.getElementById('uploadTextureInput');
 
   let currentModel = null;
   let currentTextureDataUrl = null;
+  let lastFaceRectsByCube = null;
+  let lastResolution = null;
 
   fileInput.addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -409,7 +422,66 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # - pivotX,pivotY,pivotZ: OPTIONAL, Drehpunkt für die Rotation,
 #                       weglassbar -> Standard = Mittelpunkt des Cubes
 #
+# ===================================================================
+# HARTE REGELN FÜR JEDEN CUBE (bitte von Anfang an einhalten, nicht
+# auf die Backup-Mechanismen weiter unten verlassen):
+# ===================================================================
+# 1. JEDE Kantenlänge (sizeX, sizeY, sizeZ) muss >= 1 sein.
+#    Kleiner als 1 ergibt eine Fläche, die kein Pixel bemalen kann.
+# 2. JEDE Kantenlänge muss <= 48 sein.
+#    Größer als 48 wird von Minecraft oft falsch gerendert/abgeschnitten.
+# 3. Braucht ein Teil des Modells eigentlich mehr als 48 Einheiten in
+#    einer Achse (z. B. ein langer Turm, ein großer Torso): SELBST in
+#    mehrere kleinere, nahtlos aneinandergrenzende Cubes aufteilen,
+#    NICHT einen einzelnen übergroßen Cube schreiben.
+#    Beispiel: Ein 96 Einheiten hoher Turm wird zu zwei je 48 hohen
+#    Cubes gestapelt:
+#      Turm_Unten; 0,0,0; 16,48,16
+#      Turm_Oben;  0,48,0; 16,48,16
+#    (Turm_Oben startet bei y=48, genau da wo Turm_Unten endet -> nahtlos)
+#    Gleiches Prinzip für Breite (x) und Tiefe (z).
+#
+# ===================================================================
+# WIE DAS UV-MAPPING DES KONVERTERS FUNKTIONIERT
+# (damit du color/pixel-Zeilen gezielt und korrekt setzen kannst)
+# ===================================================================
+# Jeder Cube bekommt automatisch sein eigenes "Unwrap"-Rechteck auf der
+# Textur, nach dem klassischen Minecraft-Box-UV-Kreuz. Für einen Cube
+# mit sizeX=dx, sizeY=dy, sizeZ=dz sieht das Unwrap-Rechteck so aus
+# (u,v = obere linke Ecke des Rechtecks für DIESEN Cube):
+#
+#           +--------+--------+
+#           |  up    |  down  |      Zeile 1: Höhe = dz
+#  +--------+--------+--------+--------+
+#  |  east  | north  |  west  | south  |  Zeile 2: Höhe = dy
+#  +--------+--------+--------+--------+
+#     dz         dx       dz      dx        <- Spaltenbreiten
+#
+# Konkret (relativ zu u,v):
+#   up:    von (u+dz,      v)      Größe dx × dz
+#   down:  von (u+dz+dx,   v)      Größe dx × dz
+#   east:  von (u,         v+dz)   Größe dz × dy
+#   north: von (u+dz,      v+dz)   Größe dx × dy
+#   west:  von (u+dz+dx,   v+dz)   Größe dz × dy
+#   south: von (u+2dz+dx,  v+dz)   Größe dx × dy
+# Das ganze Unwrap-Rechteck ist also (2dx+2dz) breit und (dz+dy) hoch.
+#
+# WICHTIG: Für color/pixel-Zeilen musst du u,v NICHT selbst kennen —
+# das übernimmt der Konverter automatisch (er reiht die Unwrap-Rechtecke
+# aller Cubes in der Reihenfolge, in der sie in der Datei stehen, von
+# links nach rechts an und bricht die Zeile um, wenn die Textur-Breite
+# nicht mehr reicht). Du beziehst dich einfach auf Cube-Name + Fläche,
+# und x,y bei "pixel" ist relativ zur jeweiligen Fläche (0,0 = oben
+# links). Die Tabelle oben brauchst du nur, um zu wissen, wie GROSS
+# (in Pixeln) jede Fläche ist, damit deine x,y-Werte innerhalb der
+# Fläche bleiben:
+#   north/south-Fläche: dx × dy Pixel groß
+#   up/down-Fläche:      dx × dz Pixel groß
+#   east/west-Fläche:    dz × dy Pixel groß
+#
+# ===================================================================
 # TEXTUR-AUFLÖSUNG (optional):
+# ===================================================================
 # Falls die Textur eine andere Auflösung als die Standard-16x16-Pixel haben soll
 # (z. B. 64x64 für ein detaillierteres Modell), kann eine eigene Zeile ergänzt werden:
 #
@@ -418,10 +490,15 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # Beispiel: resolution; 64,64
 # Diese Zeile ist optional und darf an beliebiger Stelle in der Datei stehen.
 # Ohne diese Zeile wird die im Tool eingestellte Auflösung (Standard 16x16) verwendet.
+# Hinweis: Ist die angegebene Auflösung zu klein, um alle Unwrap-Rechtecke
+# (siehe oben) nebeneinander unterzubringen, vergrößert der Konverter sie
+# automatisch (bevorzugt großzügig genug wählen, um das zu vermeiden).
 #
-# TEXTUR BEMALEN (optional):
-# Du kannst dem Modell direkt eine Textur geben, ohne die genauen UV-Koordinaten
-# zu kennen — dafür beziehst du dich einfach auf Cube-Name + Flächenname.
+# ===================================================================
+# TEXTUR BEMALEN (primärer, empfohlener Weg):
+# ===================================================================
+# Du kannst dem Modell direkt eine Textur geben, ohne u,v selbst zu berechnen —
+# dafür beziehst du dich einfach auf Cube-Name + Flächenname.
 # Flächennamen: north, south, east, west, up, down, oder "all" für alle 6 Flächen.
 #
 # Ganze Fläche einfärben:
@@ -431,10 +508,8 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 #
 # Einzelnen Pixel setzen (für Details wie Augen, Muster, Schattierungen):
 #   pixel; Cube-Name; Fläche; x,y; #hexfarbe
-#   x,y sind Pixel-Koordinaten INNERHALB der Fläche, oben links = 0,0.
-#   Die Fläche ist so groß wie die entsprechenden zwei Seitenlängen des Cubes
-#   (z. B. bei north/south: breite=sizeX, höhe=sizeY; bei up/down: sizeX,sizeZ;
-#   bei east/west: sizeZ,sizeY). Du musst x,y also nur relativ zur Cube-Größe wählen.
+#   x,y sind Pixel-Koordinaten INNERHALB der Fläche, oben links = 0,0,
+#   und müssen innerhalb der oben berechneten Flächengröße bleiben.
 #   Beispiel: pixel; Kopf; north; 2,3; #000000   (ein schwarzes Auge-Pixel)
 #
 # Reihenfolge zählt: spätere Zeilen überschreiben frühere an derselben Stelle.
@@ -442,44 +517,41 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 # Ohne color/pixel-Zeilen bleibt die Textur transparent (kann später in Blockbench
 # von Hand bemalt werden).
 #
-# GRÖSSENLIMIT PRO CUBE (wichtig!):
-# Ein einzelner Cube sollte pro Achse NICHT größer als 48 Einheiten sein
-# (sizeX, sizeY, sizeZ jeweils <= 48). Größere Cubes werden von Minecraft oft
-# falsch gerendert oder abgeschnitten.
+# ===================================================================
+# BACKUP-MECHANISMEN DES KONVERTERS (NICHT als primäre Methode nutzen!)
+# ===================================================================
+# Der Konverter hat drei Sicherheitsnetze für den Fall, dass sich obige
+# Regeln nicht exakt einhalten lassen. Sie funktionieren zuverlässig,
+# sollen aber die Ausnahme bleiben, nicht der Normalfall:
 #
-# Falls ein Teil des Modells eigentlich größer sein müsste (z. B. ein riesiger
-# Torso oder ein langer Schwanz): am besten NICHT einen übergroßen Cube
-# verwenden, sondern die Form von vornherein aus mehreren kleineren,
-# aneinandergrenzenden Cubes zusammensetzen, die zusammen die gewünschte
-# Gesamtgröße ergeben.
+# 1. Auto-Skalierung: Hat irgendein Cube eine Kante < 1, wird automatisch
+#    das GESAMTE Modell proportional hochskaliert, bis die kleinste Kante
+#    genau 1 ist. Bitte trotzdem von Anfang an mit Kantenlängen >= 1 planen.
 #
-# Beispiel: Ein 96 Einheiten hoher Turm (zu groß für einen Cube) wird aus
-# zwei je 48 Einheiten hohen Cubes gestapelt:
-#   Turm_Unten; 0,0,0; 16,48,16
-#   Turm_Oben;  0,48,0; 16,48,16
-# (Turm_Oben beginnt genau dort in y, wo Turm_Unten endet: 0+48=48 -> passt nahtlos)
+# 2. Auto-Split: Hat ein Cube eine Kante > 48, splittet der Konverter ihn
+#    automatisch in mehrere gleich große, nahtlose Teile mit identischer
+#    Rotation/Pivot. Bei sehr extremen Übergrößen entstehen dabei sehr
+#    viele Teile und eine riesige Textur — bitte trotzdem selbst wie oben
+#    beschrieben manuell in sinnvolle Cubes <= 48 aufteilen.
 #
-# Das gleiche Prinzip gilt für Breite (x) und Tiefe (z): lieber mehrere Cubes
-# nebeneinander/hintereinander setzen, als ein Maß über 48 zu benutzen.
+# 3. UV-Vorlage + Textur-Upload: Alternativ zu color/pixel-Zeilen kann im
+#    Tool nach dem Parsen eine "UV-Vorlage (PNG)" heruntergeladen werden
+#    (zeigt alle Flächen-Rechtecke beschriftet). Eine Bild-KI kann diese
+#    Vorlage bemalen, das Ergebnis wird über "Eigene Textur hochladen"
+#    wieder eingebettet. Das ist nur ein Fallback für den Fall, dass keine
+#    color/pixel-Zeilen genutzt werden sollen — der direkte Weg über
+#    color/pixel in dieser TXT-Datei ist einfacher und bevorzugt.
 #
-# HINWEIS: Der Konverter splittet zu große Cubes inzwischen zur Not auch
-# automatisch (in nahtlose, gleich große Teile mit identischer Rotation/Pivot).
-# Das ist ein Sicherheitsnetz, kein Freibrief — bei sehr extremen Übergrößen
-# (z. B. 500 statt 48) entstehen dabei sehr viele Teile und eine riesige
-# Textur. Bitte trotzdem von Anfang an selbst sinnvoll unter 48 pro Achse
-# bleiben bzw. wie im Beispiel oben manuell zusammensetzen.
-#
-# Regeln:
+# ===================================================================
+# Regeln (Zusammenfassung):
+# ===================================================================
 # - Genau EIN Cube pro Zeile
 # - Werte durch Semikolon (;) getrennt, Zahlen innerhalb eines Feldes durch Komma
 # - Zeilen, die mit # beginnen, oder leere Zeilen werden beim Einlesen ignoriert
 # - Rotation und Pivot dürfen weggelassen werden, wenn nicht benötigt
 # - Bitte auf sinnvolle Proportionen und möglichst wenig ungewollte Überlappung achten
-# - KEIN Cube darf sizeX, sizeY oder sizeZ > 48 haben — bei Bedarf aufteilen (siehe oben)
-# - Jede Kantenlänge muss > 0 sein. Werte unter 1 (z. B. 0.5) funktionieren zwar
-#   auch (das Tool skaliert das gesamte Modell dann automatisch hoch, damit jede
-#   Fläche bemalbar bleibt), besser ist es aber, von Anfang an mit Kantenlängen
-#   >= 1 zu arbeiten, um unnötige Skalierung zu vermeiden.
+# - JEDE Kantenlänge: >= 1 und <= 48 (siehe "HARTE REGELN" oben)
+# - Große Formen selbst aus mehreren Cubes zusammensetzen statt auf Auto-Split zu bauen
 #
 # Beispiel (einfache humanoide Figur, insgesamt 24x32x8 Einheiten groß, grob bemalt):
 # resolution; 64,64
@@ -543,6 +615,63 @@ pixel; Kopf; north; 5,3; #000000
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  });
+
+  downloadUvTemplateBtn.addEventListener('click', () => {
+    if (!lastFaceRectsByCube || !lastResolution) return;
+    const { dataUrl } = buildUvTemplateCanvas(lastResolution[0], lastResolution[1], lastFaceRectsByCube);
+    const name = (modelNameInput.value.trim() || 'modell').replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = name + '_uv_vorlage.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+
+  uploadTextureInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file || !currentModel || !lastResolution) return;
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const [w, h] = lastResolution;
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/png');
+
+        currentTextureDataUrl = dataUrl;
+        if (currentModel.textures && currentModel.textures[0]) {
+          currentModel.textures[0].source = dataUrl;
+        }
+
+        texturePreviewCanvas.width = w;
+        texturePreviewCanvas.height = h;
+        const pctx = texturePreviewCanvas.getContext('2d');
+        pctx.imageSmoothingEnabled = false;
+        pctx.clearRect(0, 0, w, h);
+        pctx.drawImage(canvas, 0, 0);
+        texturePreviewWrap.style.display = 'block';
+
+        const sizeMismatch = (img.width !== w || img.height !== h);
+        downloadStatus.className = 'status ok';
+        downloadStatus.textContent = `✓ Eigene Textur "${file.name}" übernommen und ins Modell eingebettet.` +
+          (sizeMismatch ? ` Hinweis: Bild war ${img.width}×${img.height}, wurde auf ${w}×${h} skaliert, damit es zum UV-Layout passt.` : '');
+      };
+      img.onerror = () => {
+        downloadStatus.className = 'status err';
+        downloadStatus.textContent = '✗ Bilddatei konnte nicht gelesen werden.';
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
   });
 
   function uuidv4() {
@@ -798,6 +927,56 @@ pixel; Kopf; north; 5,3; #000000
     return { canvas, dataUrl: canvas.toDataURL('image/png'), warnings };
   }
 
+  // Erzeugt eine "Schablonen"-Textur in der exakten Modell-Auflösung: jede Fläche
+  // bekommt einen farbigen Rahmen + (wenn Platz ist) eine Beschriftung "Cube/Fläche".
+  // Damit lässt sich extern (z. B. von einer Bild-KI oder per Hand) exakt an der
+  // richtigen Stelle gemalt werden — die fertige Textur kann danach wieder
+  // hochgeladen und eingebettet werden.
+  function buildUvTemplateCanvas(width, height, faceRectsByCube) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, width, height);
+
+    // Leicht transparentes Schachbrettmuster als Hintergrund, damit Transparenz sichtbar bleibt
+    const cell = Math.max(1, Math.round(Math.min(width, height) / 16));
+    for (let y = 0; y < height; y += cell) {
+      for (let x = 0; x < width; x += cell) {
+        const even = ((x / cell + y / cell) | 0) % 2 === 0;
+        ctx.fillStyle = even ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.02)';
+        ctx.fillRect(x, y, cell, cell);
+      }
+    }
+
+    const palette = ['#5ec9ff', '#ff9d5e', '#7ee08a', '#ff7ac6', '#ffe066', '#c792ea'];
+    let colorIdx = 0;
+    ctx.textBaseline = 'top';
+
+    Object.entries(faceRectsByCube).forEach(([cubeName, rects]) => {
+      const color = palette[colorIdx % palette.length];
+      colorIdx++;
+      Object.entries(rects).forEach(([face, rect]) => {
+        const [u1, v1, u2, v2] = rect;
+        const w = u2 - u1, h = v2 - v1;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(u1 + 0.5, v1 + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+
+        const label = `${cubeName}/${face}`;
+        const fontSize = Math.max(4, Math.min(8, Math.floor(Math.min(w, h) / 2)));
+        if (w >= fontSize * 2 && h >= fontSize + 2) {
+          ctx.font = `${fontSize}px monospace`;
+          ctx.fillStyle = color;
+          const shortLabel = w < ctx.measureText(label).width ? face.slice(0, Math.max(1, Math.floor(w / (fontSize * 0.6)))) : label;
+          ctx.fillText(shortLabel, u1 + 1, v1 + 1, w - 2);
+        }
+      });
+    });
+
+    return { canvas, dataUrl: canvas.toDataURL('image/png') };
+  }
+
   function buildElement({ name, from, to, rotation, pivot }, uvOffset, dims, textureIndex) {
     const faces = computeBoxUvFaces(dims.dx, dims.dy, dims.dz, uvOffset[0], uvOffset[1]);
     if (textureIndex !== null) {
@@ -848,8 +1027,13 @@ pixel; Kopf; north; 5,3; #000000
     let resolutionFromFile = null;
     downloadBtn.disabled = true;
     downloadTextureBtn.disabled = true;
+    downloadUvTemplateBtn.disabled = true;
+    uploadTextureInput.disabled = true;
+    uploadTextureLabel.style.opacity = '0.5';
     currentModel = null;
     currentTextureDataUrl = null;
+    lastFaceRectsByCube = null;
+    lastResolution = null;
     texturePreviewWrap.style.display = 'none';
     cubeListEl.innerHTML = '';
     downloadStatus.className = 'status';
@@ -914,6 +1098,8 @@ pixel; Kopf; north; 5,3; #000000
         Object.entries(faces).forEach(([dir, f]) => { rects[dir] = f.uv; });
         faceRectsByCube[c.name] = rects;
       });
+      lastFaceRectsByCube = faceRectsByCube;
+      lastResolution = resolution;
 
       const hasTexture = true; // Textur immer erzeugen (auch transparent), damit Vorschau/Download stets verfügbar sind
       const textureIndex = hasTexture ? 0 : null;
@@ -984,6 +1170,9 @@ pixel; Kopf; north; 5,3; #000000
 
       downloadBtn.disabled = false;
       downloadTextureBtn.disabled = false;
+      downloadUvTemplateBtn.disabled = false;
+      uploadTextureInput.disabled = false;
+      uploadTextureLabel.style.opacity = '1';
     } catch (err) {
       parseStatus.className = 'status err';
       parseStatus.textContent = '✗ ' + err.message;
