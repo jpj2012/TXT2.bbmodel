@@ -285,7 +285,7 @@
 <b>Fläche einfärben:</b> color; Kopf; north; #3a2a1a
 <b>Einzelpixel setzen:</b> pixel; Kopf; north; 2,3; #ffffff
 Zeilen mit # werden ignoriert. Flächen: north/south/east/west/up/down/all.
-<b>Größenlimit:</b> Cubes über 48 Einheiten pro Achse werden automatisch in nahtlose, gleich rotierende Teile gesplittet.
+<b>Größenlimit:</b> Cubes über 48 Einheiten pro Achse werden automatisch in nahtlose, gleich rotierende Teile gesplittet — auch wenn erst die Rotation (Diagonale) die Grenze sprengt.
 <b>Mindestgröße:</b> Kanten unter 1 führen zu proportionaler Hochskalierung des ganzen Modells.
 <b>Tipp:</b> Nach dem Parsen kann eine UV-Vorlage (Schablone) heruntergeladen werden, um extern exakt passend zu bemalen und danach wieder hochzuladen.
       </div>
@@ -542,6 +542,17 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 #    color/pixel-Zeilen genutzt werden sollen — der direkte Weg über
 #    color/pixel in dieser TXT-Datei ist einfacher und bevorzugt.
 #
+# 4. Auto-Split bei Rotation (Diagonal-Effekt): Ein Cube mit z. B. 44x44
+#    Kantenlänge ist für sich genommen okay (<=48), wird aber um z. B. 45°
+#    gedreht, wächst seine ACHSENAUSGERICHTETE Bounding Box durch die
+#    Diagonale auf über 62 Einheiten — und Minecraft/Blockbench meldet ihn
+#    trotzdem als "zu groß". Der Konverter erkennt das automatisch und
+#    splittet den Cube in diesem Fall zusätzlich weiter (gleiche Rotation/
+#    Pivot bleibt erhalten). Bitte trotzdem selbst vorsichtig sein: bei
+#    Rotationswinkeln, die deutlich von 0°/90°/180°/270° abweichen, lieber
+#    von vornherein kleinere Cubes verwenden (deutlich unter 48), damit
+#    auch die Diagonale sicher passt.
+#
 # ===================================================================
 # Regeln (Zusammenfassung):
 # ===================================================================
@@ -794,21 +805,120 @@ pixel; Kopf; north; 5,3; #000000
     return parts;
   }
 
-  // Wendet splitOversizedCube auf eine ganze Cube-Liste an und meldet, wie viele
-  // Cubes in wie viele Teile aufgeteilt wurden.
+  // Halbiert einen Cube entlang seiner (lokal) längsten Achse in zwei Teile.
+  // Rotation und Pivot bleiben für beide Hälften identisch zum Original.
+  function splitInHalfAlongLargestAxis(cube) {
+    const sizes = [0, 1, 2].map(i => Math.abs(cube.to[i] - cube.from[i]));
+    let axis = 0;
+    for (let i = 1; i < 3; i++) {
+      if (sizes[i] > sizes[axis]) axis = i;
+    }
+    const mid = (cube.from[axis] + cube.to[axis]) / 2;
+    const partA = { ...cube, from: cube.from.slice(), to: cube.to.slice(), rotation: cube.rotation.slice(), pivot: cube.pivot.slice() };
+    const partB = { ...cube, from: cube.from.slice(), to: cube.to.slice(), rotation: cube.rotation.slice(), pivot: cube.pivot.slice() };
+    partA.to[axis] = mid;
+    partB.from[axis] = mid;
+    return [partA, partB];
+  }
+
+  // Behebt Cubes, deren ROTIERTE Bounding Box (nicht die lokale Größe) die
+  // Grenze überschreitet — das kann bei Rotation abseits von 0°/90°/180°/270°
+  // passieren (Diagonal-Effekt), selbst wenn splitAllOversizedCubes schon
+  // gelaufen ist. Halbiert so lange weiter, bis auch die rotierte Bounding
+  // Box passt. Konvergiert garantiert, da halbieren die Diagonale immer
+  // proportional mitschrumpft.
+  function fixRotatedOversizedCubes(cubes) {
+    const result = [];
+    let fixedOriginals = 0;
+    let totalNewParts = 0;
+    const details = [];
+
+    cubes.forEach(c => {
+      if (c.rotation.every(r => r === 0)) {
+        result.push(c);
+        return;
+      }
+      let queue = [c];
+      const produced = [];
+      let iterations = 0;
+      while (queue.length > 0 && iterations < 500) {
+        iterations++;
+        const cur = queue.shift();
+        const rotSize = rotatedBoundingSize(cur);
+        if (rotSize.some(s => s > MAX_CUBE_SIZE + 1e-6)) {
+          queue.push(...splitInHalfAlongLargestAxis(cur));
+        } else {
+          produced.push(cur);
+        }
+      }
+      if (produced.length > 1) {
+        fixedOriginals++;
+        totalNewParts += produced.length;
+        produced.forEach((p, i) => { p.name = `${c.name}_r${i + 1}`; });
+        details.push(`"${c.name}" (Rotation ${c.rotation.join('°, ')}°) → zusätzlich in ${produced.length} Teile gesplittet, da die Diagonale bei dieser Rotation sonst die Grenze gesprengt hätte`);
+      }
+      result.push(...produced);
+    });
+
+    return { cubes: result, fixedOriginals, totalNewParts, details };
+  }
+  // welche Cubes in wie viele Teile aufgeteilt wurden (nicht nur eine Gesamtzahl).
   function splitAllOversizedCubes(cubes) {
     const result = [];
     let splitOriginals = 0;
     let totalNewParts = 0;
+    const details = [];
     cubes.forEach(c => {
       const parts = splitOversizedCube(c);
       if (parts.length > 1) {
         splitOriginals++;
         totalNewParts += parts.length;
+        const origSize = [0, 1, 2].map(i => Math.round(Math.abs(c.to[i] - c.from[i]) * 100) / 100);
+        details.push(`"${c.name}" (${origSize.join('×')}) → ${parts.length} Teile (${parts.map(p => p.name).join(', ')})`);
       }
       result.push(...parts);
     });
-    return { cubes: result, splitOriginals, totalNewParts };
+    return { cubes: result, splitOriginals, totalNewParts, details };
+  }
+
+  // Rotiert einen Punkt um pivot mit den gegebenen Rotationswinkeln (Grad, Reihenfolge X,Y,Z).
+  // Wird nur für die Diagnose der rotierten Bounding Box verwendet (Näherung).
+  function rotatePointDeg(p, pivot, rotationDeg) {
+    const [rx, ry, rz] = rotationDeg.map(d => d * Math.PI / 180);
+    let x = p[0] - pivot[0], y = p[1] - pivot[1], z = p[2] - pivot[2];
+    let y1 = y * Math.cos(rx) - z * Math.sin(rx);
+    let z1 = y * Math.sin(rx) + z * Math.cos(rx);
+    y = y1; z = z1;
+    let x1 = x * Math.cos(ry) + z * Math.sin(ry);
+    let z2 = -x * Math.sin(ry) + z * Math.cos(ry);
+    x = x1; z = z2;
+    let x2 = x * Math.cos(rz) - y * Math.sin(rz);
+    let y2 = x * Math.sin(rz) + y * Math.cos(rz);
+    x = x2; y = y2;
+    return [x + pivot[0], y + pivot[1], z + pivot[2]];
+  }
+
+  // Berechnet die achsenausgerichtete Bounding Box eines Cubes NACH Anwendung
+  // seiner Rotation um den Pivot. Das ist die Größe, die Blockbench/Minecraft
+  // für die "3x3x3-Blockgrenze"-Prüfung tatsächlich heranzieht — ein an sich
+  // kleiner Cube kann bei starker Rotation und weit entferntem Pivot trotzdem
+  // eine riesige rotierte Bounding Box haben (bekanntes Blockbench-Verhalten).
+  function rotatedBoundingSize(cube) {
+    if (cube.rotation.every(r => r === 0)) {
+      return [0, 1, 2].map(i => Math.abs(cube.to[i] - cube.from[i]));
+    }
+    const corners = [];
+    for (const cx of [cube.from[0], cube.to[0]]) {
+      for (const cy of [cube.from[1], cube.to[1]]) {
+        for (const cz of [cube.from[2], cube.to[2]]) {
+          corners.push(rotatePointDeg([cx, cy, cz], cube.pivot, cube.rotation));
+        }
+      }
+    }
+    return [0, 1, 2].map(i => {
+      const vals = corners.map(c => c[i]);
+      return Math.max(...vals) - Math.min(...vals);
+    });
   }
 
   // Berechnet das klassische Minecraft-Box-UV-Layout für einen Cube:
@@ -1019,6 +1129,12 @@ pixel; Kopf; north; 5,3; #000000
     };
   }
 
+  function summarizeList(items, maxShown) {
+    if (items.length <= maxShown) return items.join('\n   ');
+    const shown = items.slice(0, maxShown);
+    return shown.join('\n   ') + `\n   … und ${items.length - maxShown} weitere (gleiches Muster)`;
+  }
+
   function parseAndValidate() {
     const text = inputEl.value;
     const lines = text.split('\n');
@@ -1069,6 +1185,12 @@ pixel; Kopf; north; 5,3; #000000
 
       const splitResult = splitAllOversizedCubes(cubes);
       cubes = splitResult.cubes;
+
+      // Cubes, deren ROTIERTE Bounding Box (Diagonal-Effekt) die Grenze noch
+      // überschreitet, obwohl ihre lokale Größe schon <= MAX_CUBE_SIZE ist,
+      // werden zusätzlich automatisch weiter gesplittet, bis auch das passt.
+      const rotFixResult = fixRotatedOversizedCubes(cubes);
+      cubes = rotFixResult.cubes;
 
       if (resolutionFromFile) {
         resWidthInput.value = resolutionFromFile[0];
@@ -1150,7 +1272,12 @@ pixel; Kopf; north; 5,3; #000000
         msg += `\n📐 Gesamtes Modell um Faktor ${Math.round(scaleFactor * 100) / 100}× vergrößert, da mindestens eine Kante kleiner als 1 war (sonst nicht bemalbar) — alle Cubes proportional mitskaliert.`;
       }
       if (splitResult.splitOriginals > 0) {
-        msg += `\n✂️ ${splitResult.splitOriginals} zu große(r) Cube(s) automatisch in insgesamt ${splitResult.totalNewParts} nahtlose Teile aufgeteilt (Grenze: ${MAX_CUBE_SIZE} Einheiten/Achse).`;
+        msg += `\n✂️ ${splitResult.splitOriginals} zu große(r) Cube(s) automatisch in insgesamt ${splitResult.totalNewParts} nahtlose Teile aufgeteilt (Grenze: ${MAX_CUBE_SIZE} Einheiten/Achse):`;
+        msg += `\n   ${summarizeList(splitResult.details, 8)}`;
+      }
+      if (rotFixResult.fixedOriginals > 0) {
+        msg += `\n🔄 ${rotFixResult.fixedOriginals} Cube(s) zusätzlich wegen Rotations-Diagonale automatisch weiter gesplittet (insgesamt ${rotFixResult.totalNewParts} Teile):`;
+        msg += `\n   ${summarizeList(rotFixResult.details, 8)}`;
       }
       if (paintDirectives.length > 0) {
         msg += `\n🎨 ${paintDirectives.length} Mal-Direktive(n) angewendet, Textur eingebettet.`;
