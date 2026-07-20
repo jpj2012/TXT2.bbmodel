@@ -165,6 +165,34 @@ Cube einzeln mit Namen und Teileanzahl auf (nicht nur eine Gesamtzahl), damit
 nachvollziehbar ist, was genau verändert wurde. Bei sehr vielen betroffenen
 Cubes wird die Liste ab dem 9. Eintrag zusammengefasst, um lesbar zu bleiben.
 
+## Weitere Sicherheitsnetze
+
+Zusätzlich zu Mindest-/Maximalgröße und Rotations-Diagonale:
+
+- **Auto-Zentrierung:** Liegt das gesamte Modell zu weit vom Ursprung
+  entfernt (z. B. Position 500,500,500), wird es automatisch als Ganzes
+  näher an den Ursprung verschoben — eine reine Translation, die nichts an
+  Form, Proportionen oder Rotation ändert.
+- **Invertierte Größen:** Eine versehentlich negative Größe (`from > to`)
+  wird automatisch normalisiert statt eine unsichtbare/kaputte Box zu
+  erzeugen.
+- **Doppelte Cube-Namen:** Werden erkannt und im Status-Text gemeldet
+  (nicht automatisch umbenannt, da nicht klar ist, ob das Absicht ist).
+  `color`/`pixel`-Zeilen mit diesem Namen wirken auf alle Cubes mit
+  demselben Namen gleichzeitig.
+- **Textur-Obergrenze:** Ab 2048px gibt's eine Warnung, ab 8192px bricht
+  der Konverter kontrolliert ab (Fehlermeldung statt Browser-Absturz durch
+  eine zu riesige Canvas-Textur).
+
+**Fixpunkt-Schleife:** Skalierung, Größen-Split, Rotations-Split und
+Auto-Zentrierung laufen nicht nur einmal hintereinander, sondern als
+Schleife mit bis zu 8 Durchläufen. Falls ein Mechanismus durch seine eigene
+Korrektur einen anderen erneut nötig macht (z. B. macht Hochskalieren einen
+vorher unproblematischen Cube nachträglich zu groß), greift der nächste
+Durchlauf das automatisch auf. Die Schleife bricht früh ab, sobald ein
+Durchlauf nichts mehr verändert — bei normalen Modellen passiert das schon
+nach 1 Durchlauf, betroffene Modelle brauchen meist 2.
+
 ## UV-Vorlage herunterladen & eigene Textur hochladen
 
 Statt (oder zusätzlich zu) `color`/`pixel`-Zeilen kann die Textur auch komplett

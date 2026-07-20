@@ -27,6 +27,15 @@ Enthält exakt dieselben Sicherheitsnetze wie das Web-Tool:
 - Maximalgröße 48 pro Kante (sonst automatischer, nahtloser Split)
 - Rotations-Diagonale-Fix (zusätzlicher Split, falls die rotierte Bounding
   Box trotz lokal okayer Größe die Grenze sprengt)
+- Auto-Zentrierung, falls das Modell zu weit vom Ursprung entfernt liegt
+  (reine Verschiebung, ändert nichts an Form/Proportionen)
+- Normalisierung invertierter Cubes (negative Größe / from > to)
+- Warnung bei doppelten Cube-Namen
+- Textur-Obergrenze (8192px hart, ab 2048px Warnung) gegen zu große/
+  performance-kritische Texturen
+- Alle vier oben genannten Mechanismen laufen als Fixpunkt-Schleife (bis zu
+  8 Durchläufe): falls einer durch seine eigene Korrektur einen anderen
+  erneut nötig macht, greift der nächste Durchlauf das automatisch auf
 - Box-UV-Layout: jeder Cube bekommt einen eigenen, überlappungsfreien
   Texturbereich
 - color/pixel-Direktiven zum direkten Bemalen der Textur
@@ -48,6 +57,9 @@ except ImportError:
     sys.exit(1)
 
 MAX_CUBE_SIZE = 48
+TEXTURE_WARN_DIM = 2048
+TEXTURE_HARD_LIMIT_DIM = 8192
+MAX_SAFETY_ITERATIONS = 8
 VALID_FACES = ['north', 'south', 'east', 'west', 'up', 'down', 'all']
 
 
@@ -79,6 +91,11 @@ def parse_line(line, line_no):
 
     from_pos = pos
     to_pos = [pos[i] + size[i] for i in range(3)]
+    was_inverted = False
+    for i in range(3):
+        if from_pos[i] > to_pos[i]:
+            from_pos[i], to_pos[i] = to_pos[i], from_pos[i]
+            was_inverted = True
 
     if len(parts) >= 5 and parts[4]:
         pivot = [float(v) for v in parts[4].split(',')]
@@ -87,7 +104,7 @@ def parse_line(line, line_no):
     else:
         pivot = [(from_pos[i] + to_pos[i]) / 2 for i in range(3)]
 
-    return {'name': name, 'from': from_pos, 'to': to_pos, 'rotation': rotation, 'pivot': pivot}
+    return {'name': name, 'from': from_pos, 'to': to_pos, 'rotation': rotation, 'pivot': pivot, 'was_inverted': was_inverted}
 
 
 def parse_paint_line(line, line_no):
@@ -210,6 +227,50 @@ def rotated_bounding_size(cube):
     return [max(c[i] for c in corners) - min(c[i] for c in corners) for i in range(3)]
 
 
+SAFE_POSITION_RANGE = 64
+
+
+def compute_model_world_bounds(cubes):
+    mins = [math.inf, math.inf, math.inf]
+    maxs = [-math.inf, -math.inf, -math.inf]
+    for c in cubes:
+        if all(r == 0 for r in c['rotation']):
+            corners = [c['from'], c['to']]
+        else:
+            corners = []
+            for cx in (c['from'][0], c['to'][0]):
+                for cy in (c['from'][1], c['to'][1]):
+                    for cz in (c['from'][2], c['to'][2]):
+                        corners.append(rotate_point_deg([cx, cy, cz], c['pivot'], c['rotation']))
+        for p in corners:
+            for i in range(3):
+                if p[i] < mins[i]:
+                    mins[i] = p[i]
+                if p[i] > maxs[i]:
+                    maxs[i] = p[i]
+    return mins, maxs
+
+
+def auto_recenter_model(cubes):
+    mins, maxs = compute_model_world_bounds(cubes)
+    max_abs = max([abs(v) for v in mins] + [abs(v) for v in maxs])
+    if not math.isfinite(max_abs) or max_abs <= SAFE_POSITION_RANGE:
+        return {'shifted': False, 'shift': [0, 0, 0]}
+    center = [(mins[i] + maxs[i]) / 2 for i in range(3)]
+    shift = [-c for c in center]
+    # Bei Modellen, die selbst breiter als 2x SAFE_POSITION_RANGE sind, kann
+    # Zentrieren max_abs nie unter die Schwelle drücken. Stabilität wird daher
+    # an der Größe der Verschiebung selbst festgemacht, nicht am Zielwert.
+    if max(abs(s) for s in shift) < 0.5:
+        return {'shifted': False, 'shift': [0, 0, 0]}
+    for c in cubes:
+        for i in range(3):
+            c['from'][i] += shift[i]
+            c['to'][i] += shift[i]
+            c['pivot'][i] += shift[i]
+    return {'shifted': True, 'shift': shift}
+
+
 def split_in_half_along_largest_axis(cube):
     sizes = [abs(cube['to'][i] - cube['from'][i]) for i in range(3)]
     axis = sizes.index(max(sizes))
@@ -252,6 +313,47 @@ def fix_rotated_oversized_cubes(cubes):
                             f"-> zusätzlich {len(produced)} Teile wegen Diagonal-Effekt")
         result.extend(produced)
     return {'cubes': result, 'fixed_originals': fixed_originals, 'total_new_parts': total_new_parts, 'details': details}
+
+
+def run_safety_pass_once(cubes):
+    changed = False
+    log = []
+
+    scale_factor = auto_scale_to_min_size(cubes)
+    if scale_factor != 1:
+        changed = True
+        log.append({'type': 'scale', 'factor': scale_factor})
+
+    split_result = split_all_oversized_cubes(cubes)
+    cubes = split_result['cubes']
+    if split_result['split_originals'] > 0:
+        changed = True
+        log.append({'type': 'split', 'result': split_result})
+
+    rot_fix_result = fix_rotated_oversized_cubes(cubes)
+    cubes = rot_fix_result['cubes']
+    if rot_fix_result['fixed_originals'] > 0:
+        changed = True
+        log.append({'type': 'rotfix', 'result': rot_fix_result})
+
+    recenter_result = auto_recenter_model(cubes)
+    if recenter_result['shifted']:
+        changed = True
+        log.append({'type': 'recenter', 'result': recenter_result})
+
+    return {'cubes': cubes, 'changed': changed, 'log': log}
+
+
+def run_safety_pipeline(cubes):
+    all_logs = []
+    iterations = 0
+    for iterations in range(1, MAX_SAFETY_ITERATIONS + 1):
+        pass_result = run_safety_pass_once(cubes)
+        cubes = pass_result['cubes']
+        all_logs.extend(pass_result['log'])
+        if not pass_result['changed']:
+            break
+    return {'cubes': cubes, 'iterations': iterations, 'logs': all_logs}
 
 
 # --------------------------------------------------------------------------
@@ -417,13 +519,15 @@ def convert(text, model_name, base_resolution=(16, 16)):
     if not cubes:
         raise ValueError("Keine gültigen Cube-Zeilen gefunden.")
 
-    scale_factor = auto_scale_to_min_size(cubes)
+    name_counts = {}
+    for c in cubes:
+        name_counts[c['name']] = name_counts.get(c['name'], 0) + 1
+    duplicate_names = [f"\"{n}\" ({cnt}×)" for n, cnt in name_counts.items() if cnt > 1]
 
-    split_result = split_all_oversized_cubes(cubes)
-    cubes = split_result['cubes']
+    inverted_count = sum(1 for c in cubes if c.get('was_inverted'))
 
-    rot_fix_result = fix_rotated_oversized_cubes(cubes)
-    cubes = rot_fix_result['cubes']
+    safety = run_safety_pipeline(cubes)
+    cubes = safety['cubes']
 
     min_resolution = resolution_from_file if resolution_from_file else list(base_resolution)
 
@@ -435,6 +539,16 @@ def convert(text, model_name, base_resolution=(16, 16)):
 
     layout = pack_uv_layout(cube_dims, min_resolution[0], min_resolution[1])
     resolution = [layout['width'], layout['height']]
+
+    if resolution[0] > TEXTURE_HARD_LIMIT_DIM or resolution[1] > TEXTURE_HARD_LIMIT_DIM:
+        raise ValueError(
+            f"Die benötigte Textur wäre {resolution[0]}×{resolution[1]} groß — das überschreitet die harte "
+            f"Grenze von {TEXTURE_HARD_LIMIT_DIM}px. Bitte weniger/kleinere Cubes verwenden oder das Modell "
+            f"in mehrere separate TXT-Dateien aufteilen."
+        )
+    texture_size_warning = None
+    if resolution[0] > TEXTURE_WARN_DIM or resolution[1] > TEXTURE_WARN_DIM:
+        texture_size_warning = f"Textur ist mit {resolution[0]}×{resolution[1]} sehr groß — kann in Blockbench langsam werden."
 
     face_rects_by_cube = {}
     for c, dims, offset in zip(cubes, cube_dims, layout['offsets']):
@@ -461,11 +575,12 @@ def convert(text, model_name, base_resolution=(16, 16)):
     report = {
         'cube_count': len(cubes),
         'resolution': resolution,
-        'scale_factor': scale_factor,
-        'split': split_result,
-        'rotation_fix': rot_fix_result,
+        'inverted_count': inverted_count,
+        'duplicate_names': duplicate_names,
+        'safety': safety,
         'paint_count': len(paint_directives),
         'paint_warnings': paint_warnings,
+        'texture_size_warning': texture_size_warning,
     }
 
     return model, img, uv_template_img, report
@@ -474,20 +589,48 @@ def convert(text, model_name, base_resolution=(16, 16)):
 def print_report(report):
     print(f"✓ {report['cube_count']} Cube(s) erfolgreich verarbeitet. "
           f"UV-Layout: {report['resolution'][0]}×{report['resolution'][1]}")
-    if report['scale_factor'] != 1:
-        print(f"📐 Modell um Faktor {round(report['scale_factor'], 2)}× vergrößert (Mindestkante war < 1).")
-    sr = report['split']
-    if sr['split_originals'] > 0:
-        print(f"✂️ {sr['split_originals']} zu große(r) Cube(s) in {sr['total_new_parts']} Teile gesplittet:")
-        for d in sr['details']:
-            print(f"   {d}")
-    rr = report['rotation_fix']
-    if rr['fixed_originals'] > 0:
-        print(f"🔄 {rr['fixed_originals']} Cube(s) wegen Rotations-Diagonale zusätzlich gesplittet ({rr['total_new_parts']} Teile):")
-        for d in rr['details']:
-            print(f"   {d}")
+
+    if report['inverted_count'] > 0:
+        print(f"↔️ {report['inverted_count']} Cube(s) hatten eine invertierte Größe — automatisch normalisiert.")
+    if report['duplicate_names']:
+        print(f"⚠ Doppelte Cube-Namen: {', '.join(report['duplicate_names'])}. "
+              f"Mal-Direktiven wirken auf alle davon.")
+
+    logs = report['safety']['logs']
+    scale_logs = [l for l in logs if l['type'] == 'scale']
+    split_logs = [l for l in logs if l['type'] == 'split']
+    rotfix_logs = [l for l in logs if l['type'] == 'rotfix']
+    recenter_logs = [l for l in logs if l['type'] == 'recenter']
+
+    if scale_logs:
+        total_factor = 1.0
+        for l in scale_logs:
+            total_factor *= l['factor']
+        print(f"📐 Modell um Faktor {round(total_factor, 2)}× vergrößert (Mindestkante war < 1).")
+    if split_logs:
+        total_orig = sum(l['result']['split_originals'] for l in split_logs)
+        total_parts = sum(l['result']['total_new_parts'] for l in split_logs)
+        print(f"✂️ {total_orig} zu große(r) Cube(s) in {total_parts} Teile gesplittet:")
+        for l in split_logs:
+            for d in l['result']['details']:
+                print(f"   {d}")
+    if rotfix_logs:
+        total_orig = sum(l['result']['fixed_originals'] for l in rotfix_logs)
+        total_parts = sum(l['result']['total_new_parts'] for l in rotfix_logs)
+        print(f"🔄 {total_orig} Cube(s) wegen Rotations-Diagonale zusätzlich gesplittet ({total_parts} Teile):")
+        for l in rotfix_logs:
+            for d in l['result']['details']:
+                print(f"   {d}")
+    if recenter_logs:
+        shift = [round(s, 2) for s in recenter_logs[0]['result']['shift']]
+        print(f"🎯 Modell war zu weit vom Ursprung entfernt — automatisch um {tuple(shift)} verschoben.")
+    if scale_logs or split_logs or rotfix_logs or recenter_logs:
+        print(f"🛡️ Sicherheits-Pipeline: {report['safety']['iterations']} Durchlauf(e) benötigt.")
+
     if report['paint_count'] > 0:
         print(f"🎨 {report['paint_count']} Mal-Direktive(n) angewendet.")
+    if report['texture_size_warning']:
+        print(f"⚠ {report['texture_size_warning']}")
     for w in report['paint_warnings']:
         print(f"⚠ {w}")
 

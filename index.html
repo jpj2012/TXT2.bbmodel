@@ -553,6 +553,33 @@ Bein_Rechts; 0,0,-2; 4,12,4</textarea>
 #    von vornherein kleinere Cubes verwenden (deutlich unter 48), damit
 #    auch die Diagonale sicher passt.
 #
+# 5. Auto-Zentrierung: Liegt das gesamte Modell zu weit vom Ursprung entfernt
+#    (z. B. Position 500,500,500 statt in Nähe von 0,0,0), wird es automatisch
+#    als Ganzes näher an den Ursprung verschoben (reine Translation, ändert
+#    nichts an Form/Proportionen/Rotation). Trotzdem bitte von vornherein
+#    Koordinaten nahe am Ursprung wählen (grob im Bereich -32 bis +64).
+#
+# 6. Invertierte Größen: Falls versehentlich eine negative Größe entsteht
+#    (from > to), wird das automatisch korrigiert. Bitte trotzdem immer
+#    positive Größen in sizeX,sizeY,sizeZ angeben.
+#
+# 7. Doppelte Cube-Namen werden erkannt und gemeldet (nicht automatisch
+#    behoben, da nicht klar ist, ob das gewollt ist). Bitte jedem Cube einen
+#    eindeutigen Namen geben, sonst wirken color/pixel-Zeilen mit diesem
+#    Namen auf ALLE Cubes mit demselben Namen gleichzeitig.
+#
+# 8. Textur-Obergrenze: Falls durch viele Splits eine riesige Textur
+#    entstehen würde (>8192px), bricht der Konverter kontrolliert ab statt
+#    den Browser zum Absturz zu bringen. Bitte Cube-Anzahl/-Größe im Blick
+#    behalten, besonders bei sehr vielen zu großen/rotierten Cubes.
+#
+# WICHTIG: Die Mechanismen 1,2,5,6 laufen als Sicherheits-SCHLEIFE (bis zu
+# 8 Durchläufe): falls einer durch seine eigene Korrektur einen anderen
+# erneut nötig macht (z. B. macht Skalierung einen vorher okayen Cube
+# nachträglich zu groß), greift der nächste Durchlauf das automatisch auf.
+# Das ist ein Sicherheitsnetz für das Sicherheitsnetz — aber KEIN Ersatz
+# für saubere Werte von Anfang an.
+#
 # ===================================================================
 # Regeln (Zusammenfassung):
 # ===================================================================
@@ -698,6 +725,11 @@ pixel; Kopf; north; 5,3; #000000
   // Größere Cubes sollten aus mehreren kleineren zusammengesetzt werden.
   const MAX_CUBE_SIZE = 48;
 
+  // Ab dieser Texturgröße wird gewarnt (Performance-Problem), darüber wird
+  // hart abgebrochen (Browser könnte bei riesigen Canvas-Größen abstürzen/hängen).
+  const TEXTURE_WARN_DIM = 2048;
+  const TEXTURE_HARD_LIMIT_DIM = 8192;
+
   function parseLine(line, lineNo) {
     const parts = line.split(';').map(p => p.trim());
     if (parts.length < 3) {
@@ -721,7 +753,14 @@ pixel; Kopf; north; 5,3; #000000
     }
 
     const from = pos;
-    const to = [pos[0] + size[0], pos[1] + size[1], pos[2] + size[2]];
+    let to = [pos[0] + size[0], pos[1] + size[1], pos[2] + size[2]];
+    let wasInverted = false;
+    for (let i = 0; i < 3; i++) {
+      if (from[i] > to[i]) {
+        [from[i], to[i]] = [to[i], from[i]];
+        wasInverted = true;
+      }
+    }
 
     let pivot;
     if (parts[4]) {
@@ -731,7 +770,7 @@ pixel; Kopf; north; 5,3; #000000
       pivot = [0, 1, 2].map(i => (from[i] + to[i]) / 2);
     }
 
-    return { name, from, to, rotation, pivot };
+    return { name, from, to, rotation, pivot, wasInverted };
   }
 
   // Ermittelt die kleinste Kantenlänge über alle Cubes hinweg. Liegt sie unter 1,
@@ -921,7 +960,70 @@ pixel; Kopf; north; 5,3; #000000
     });
   }
 
-  // Berechnet das klassische Minecraft-Box-UV-Layout für einen Cube:
+  // Ab dieser Entfernung vom Ursprung (in Weltkoordinaten, nach Rotation) gilt
+  // ein Modell als potenziell außerhalb des von Minecraft/Blockbench akzeptierten
+  // Bereichs — unabhängig von der reinen Cube-GRÖSSE (die wird schon separat
+  // geprüft). Großzügig bemessen, damit normale Modelle nicht grundlos verschoben
+  // werden, aber echte Ausreißer (z. B. Position 500,0,0) erkannt werden.
+  const SAFE_POSITION_RANGE = 64;
+
+  function computeModelWorldBounds(cubes) {
+    let min = [Infinity, Infinity, Infinity];
+    let max = [-Infinity, -Infinity, -Infinity];
+    cubes.forEach(c => {
+      let corners;
+      if (c.rotation.every(r => r === 0)) {
+        corners = [c.from, c.to];
+      } else {
+        corners = [];
+        for (const cx of [c.from[0], c.to[0]]) {
+          for (const cy of [c.from[1], c.to[1]]) {
+            for (const cz of [c.from[2], c.to[2]]) {
+              corners.push(rotatePointDeg([cx, cy, cz], c.pivot, c.rotation));
+            }
+          }
+        }
+      }
+      corners.forEach(p => {
+        for (let i = 0; i < 3; i++) {
+          if (p[i] < min[i]) min[i] = p[i];
+          if (p[i] > max[i]) max[i] = p[i];
+        }
+      });
+    });
+    return { min, max };
+  }
+
+  // Verschiebt das GESAMTE Modell (reine Translation, keine Verzerrung), falls es
+  // zu weit vom Ursprung entfernt liegt. Manche "zu groß"-Meldungen in Minecraft/
+  // Blockbench hängen nicht an der Cube-GRÖSSE, sondern an der absoluten Position
+  // relativ zum Ursprung — auch ein winziger Cube weit draußen kann das auslösen.
+  function autoRecenterModel(cubes) {
+    const { min, max } = computeModelWorldBounds(cubes);
+    const maxAbs = Math.max(...min.map(Math.abs), ...max.map(Math.abs));
+    if (!isFinite(maxAbs) || maxAbs <= SAFE_POSITION_RANGE) {
+      return { shifted: false, shift: [0, 0, 0] };
+    }
+    const center = [0, 1, 2].map(i => (min[i] + max[i]) / 2);
+    const shift = center.map(c => -c);
+    // Falls das Modell selbst breiter als 2x SAFE_POSITION_RANGE ist, kann
+    // Zentrieren allein maxAbs nie unter die Schwelle drücken. Um endloses
+    // "Nachjustieren" über mehrere Sicherheits-Durchläufe zu vermeiden, gilt
+    // eine Verschiebung nur dann als echte Änderung, wenn sie selbst noch
+    // nennenswert groß ist (nicht nur, ob das Ziel erreicht wurde).
+    const shiftMagnitude = Math.max(...shift.map(Math.abs));
+    if (shiftMagnitude < 0.5) {
+      return { shifted: false, shift: [0, 0, 0] };
+    }
+    cubes.forEach(c => {
+      for (let i = 0; i < 3; i++) {
+        c.from[i] += shift[i];
+        c.to[i] += shift[i];
+        c.pivot[i] += shift[i];
+      }
+    });
+    return { shifted: true, shift };
+  }
   // 6 Faces werden nebeneinander/übereinander in einem Kreuz-Layout angeordnet,
   // sodass sie sich nicht überlappen. u,v ist die obere linke Ecke des Layouts.
   function computeBoxUvFaces(dx, dy, dz, u, v) {
@@ -1129,6 +1231,63 @@ pixel; Kopf; north; 5,3; #000000
     };
   }
 
+  const MAX_SAFETY_ITERATIONS = 8;
+
+  // Führt Skalierung, Größen-Split, Rotations-Split und Neuzentrierung als EINEN
+  // Durchlauf aus und meldet, ob sich dabei irgendetwas verändert hat.
+  function runSafetyPassOnce(cubes) {
+    let changed = false;
+    const log = [];
+
+    const scaleFactor = autoScaleToMinSize(cubes);
+    if (scaleFactor !== 1) {
+      changed = true;
+      log.push({ type: 'scale', factor: scaleFactor });
+    }
+
+    const splitResult = splitAllOversizedCubes(cubes);
+    cubes = splitResult.cubes;
+    if (splitResult.splitOriginals > 0) {
+      changed = true;
+      log.push({ type: 'split', result: splitResult });
+    }
+
+    const rotFixResult = fixRotatedOversizedCubes(cubes);
+    cubes = rotFixResult.cubes;
+    if (rotFixResult.fixedOriginals > 0) {
+      changed = true;
+      log.push({ type: 'rotfix', result: rotFixResult });
+    }
+
+    const recenterResult = autoRecenterModel(cubes);
+    if (recenterResult.shifted) {
+      changed = true;
+      log.push({ type: 'recenter', result: recenterResult });
+    }
+
+    return { cubes, changed, log };
+  }
+
+  // Wiederholt runSafetyPassOnce bis zu MAX_SAFETY_ITERATIONS mal — als
+  // Sicherheitsnetz für das Sicherheitsnetz: falls ein Mechanismus (z. B.
+  // Skalierung) durch seine Änderung einen anderen Mechanismus (z. B. Split)
+  // erneut nötig macht, greift der nächste Durchlauf das automatisch auf.
+  // Bricht früh ab, sobald ein Durchlauf nichts mehr verändert (Fixpunkt erreicht).
+  function runSafetyPipeline(cubes) {
+    const allLogs = [];
+    let iterations = 0;
+    for (; iterations < MAX_SAFETY_ITERATIONS; iterations++) {
+      const pass = runSafetyPassOnce(cubes);
+      cubes = pass.cubes;
+      allLogs.push(...pass.log);
+      if (!pass.changed) {
+        iterations++; // auch den letzten (leeren) Prüfdurchlauf mitzählen
+        break;
+      }
+    }
+    return { cubes, iterations, logs: allLogs };
+  }
+
   function summarizeList(items, maxShown) {
     if (items.length <= maxShown) return items.join('\n   ');
     const shown = items.slice(0, maxShown);
@@ -1181,16 +1340,20 @@ pixel; Kopf; north; 5,3; #000000
         return;
       }
 
-      const scaleFactor = autoScaleToMinSize(cubes);
+      // Doppelte Cube-Namen erkennen (rein informativ): Mal-Direktiven mit
+      // diesem Namen würden auf ALLE davon wirken, was gewollt sein kann,
+      // aber auch ein Versehen sein könnte.
+      const nameCounts = {};
+      cubes.forEach(c => { nameCounts[c.name] = (nameCounts[c.name] || 0) + 1; });
+      const duplicateNames = Object.entries(nameCounts).filter(([, n]) => n > 1).map(([name, n]) => `"${name}" (${n}×)`);
 
-      const splitResult = splitAllOversizedCubes(cubes);
-      cubes = splitResult.cubes;
+      const invertedCount = cubes.filter(c => c.wasInverted).length;
 
-      // Cubes, deren ROTIERTE Bounding Box (Diagonal-Effekt) die Grenze noch
-      // überschreitet, obwohl ihre lokale Größe schon <= MAX_CUBE_SIZE ist,
-      // werden zusätzlich automatisch weiter gesplittet, bis auch das passt.
-      const rotFixResult = fixRotatedOversizedCubes(cubes);
-      cubes = rotFixResult.cubes;
+      // Alle Sicherheitsmechanismen als Fixpunkt-Schleife: falls einer durch
+      // seine eigene Änderung einen anderen erneut nötig macht, greift der
+      // nächste Durchlauf das automatisch auf (bis zu 8 Durchläufe).
+      const safety = runSafetyPipeline(cubes);
+      cubes = safety.cubes;
 
       if (resolutionFromFile) {
         resWidthInput.value = resolutionFromFile[0];
@@ -1211,6 +1374,16 @@ pixel; Kopf; north; 5,3; #000000
       const layout = packUvLayout(cubeDims, minResolution[0], minResolution[1]);
       const resolution = [layout.width, layout.height];
       const wasExpanded = layout.width > minResolution[0] || layout.height > minResolution[1];
+
+      if (resolution[0] > TEXTURE_HARD_LIMIT_DIM || resolution[1] > TEXTURE_HARD_LIMIT_DIM) {
+        throw new Error(
+          `Die benötigte Textur wäre ${resolution[0]}×${resolution[1]} groß — das überschreitet die harte Grenze von ${TEXTURE_HARD_LIMIT_DIM}px und würde den Browser vermutlich zum Absturz bringen. ` +
+          `Bitte weniger bzw. kleinere Cubes verwenden, oder das Modell in mehrere separate TXT-Dateien aufteilen.`
+        );
+      }
+      const textureSizeWarning = (resolution[0] > TEXTURE_WARN_DIM || resolution[1] > TEXTURE_WARN_DIM)
+        ? `Textur ist mit ${resolution[0]}×${resolution[1]} sehr groß — das kann in Blockbench langsam werden. Falls möglich, Anzahl/Größe der Cubes reduzieren.`
+        : null;
 
       // Face-Rechtecke pro Cube-Namen sammeln, damit Paint-Direktiven sie finden können
       const faceRectsByCube = {};
@@ -1268,16 +1441,49 @@ pixel; Kopf; north; 5,3; #000000
       let msg = `✓ ${cubes.length} Cube(s) erfolgreich geparst. UV-Layout: ${resolution[0]}×${resolution[1]}, jeder Cube auf eigenem, überlappungsfreiem Bereich` +
         (resolutionFromFile ? ' (Basis-Auflösung aus TXT-Datei)' : '') +
         (wasExpanded ? ' — automatisch vergrößert, damit alle Faces Platz finden' : '');
-      if (scaleFactor !== 1) {
-        msg += `\n📐 Gesamtes Modell um Faktor ${Math.round(scaleFactor * 100) / 100}× vergrößert, da mindestens eine Kante kleiner als 1 war (sonst nicht bemalbar) — alle Cubes proportional mitskaliert.`;
+
+      if (invertedCount > 0) {
+        msg += `\n↔️ ${invertedCount} Cube(s) hatten eine invertierte Größe (from > to) — automatisch normalisiert.`;
       }
-      if (splitResult.splitOriginals > 0) {
-        msg += `\n✂️ ${splitResult.splitOriginals} zu große(r) Cube(s) automatisch in insgesamt ${splitResult.totalNewParts} nahtlose Teile aufgeteilt (Grenze: ${MAX_CUBE_SIZE} Einheiten/Achse):`;
-        msg += `\n   ${summarizeList(splitResult.details, 8)}`;
+      if (duplicateNames.length > 0) {
+        msg += `\n⚠ Doppelte Cube-Namen gefunden: ${duplicateNames.join(', ')}. Mal-Direktiven mit diesem Namen wirken auf alle davon — falls ungewollt, bitte eindeutige Namen vergeben.`;
       }
-      if (rotFixResult.fixedOriginals > 0) {
-        msg += `\n🔄 ${rotFixResult.fixedOriginals} Cube(s) zusätzlich wegen Rotations-Diagonale automatisch weiter gesplittet (insgesamt ${rotFixResult.totalNewParts} Teile):`;
-        msg += `\n   ${summarizeList(rotFixResult.details, 8)}`;
+
+      // Alle Änderungen aus der Sicherheits-Pipeline zusammenfassen (über alle
+      // Durchläufe hinweg, damit auch Effekte aus einem 2./3. Durchlauf sichtbar sind)
+      const scalePasses = safety.logs.filter(l => l.type === 'scale');
+      const splitPasses = safety.logs.filter(l => l.type === 'split');
+      const rotfixPasses = safety.logs.filter(l => l.type === 'rotfix');
+      const recenterPasses = safety.logs.filter(l => l.type === 'recenter');
+
+      if (scalePasses.length > 0) {
+        const totalFactor = scalePasses.reduce((acc, l) => acc * l.factor, 1);
+        msg += `\n📐 Gesamtes Modell um Faktor ${Math.round(totalFactor * 100) / 100}× vergrößert, da mindestens eine Kante kleiner als 1 war (sonst nicht bemalbar) — alle Cubes proportional mitskaliert.`;
+      }
+      if (splitPasses.length > 0) {
+        const totalSplitOriginals = splitPasses.reduce((a, l) => a + l.result.splitOriginals, 0);
+        const totalSplitParts = splitPasses.reduce((a, l) => a + l.result.totalNewParts, 0);
+        const allDetails = splitPasses.flatMap(l => l.result.details);
+        msg += `\n✂️ ${totalSplitOriginals} zu große(r) Cube(s) automatisch in insgesamt ${totalSplitParts} nahtlose Teile aufgeteilt (Grenze: ${MAX_CUBE_SIZE} Einheiten/Achse):`;
+        msg += `\n   ${summarizeList(allDetails, 8)}`;
+      }
+      if (rotfixPasses.length > 0) {
+        const totalRotOriginals = rotfixPasses.reduce((a, l) => a + l.result.fixedOriginals, 0);
+        const totalRotParts = rotfixPasses.reduce((a, l) => a + l.result.totalNewParts, 0);
+        const allDetails = rotfixPasses.flatMap(l => l.result.details);
+        msg += `\n🔄 ${totalRotOriginals} Cube(s) zusätzlich wegen Rotations-Diagonale automatisch weiter gesplittet (insgesamt ${totalRotParts} Teile):`;
+        msg += `\n   ${summarizeList(allDetails, 8)}`;
+      }
+      if (recenterPasses.length > 0) {
+        const shift = recenterPasses[0].result.shift.map(s => Math.round(s * 100) / 100);
+        msg += `\n🎯 Modell war zu weit vom Ursprung entfernt platziert — automatisch um (${shift.join(', ')}) verschoben (reine Verschiebung, Form/Proportionen unverändert).`;
+      }
+      if (scalePasses.length + splitPasses.length + rotfixPasses.length + recenterPasses.length > 0) {
+        msg += `\n🛡️ Sicherheits-Pipeline: ${safety.iterations} Durchlauf(e) benötigt, bis nichts mehr geändert werden musste.`;
+      }
+
+      if (textureSizeWarning) {
+        msg += `\n⚠ ${textureSizeWarning}`;
       }
       if (paintDirectives.length > 0) {
         msg += `\n🎨 ${paintDirectives.length} Mal-Direktive(n) angewendet, Textur eingebettet.`;
